@@ -243,15 +243,17 @@ class AccountManager(tk.Tk):
             ("二维码登录", self.qr_login),
             ("启动监听", self.start_listener),
             ("停止本窗口启动的监听", self.stop_listener),
+            ("启动全部监听", self.start_all_listeners),
+            ("停止全部监听", self.stop_all_listeners),
         ]
         quick_buttons = ttk.Frame(quick_card, style="CardInner.TFrame")
         quick_buttons.pack(fill="x")
         for index, (label, command) in enumerate(quick_actions):
-            button_style = "Primary.TButton" if index == 2 else "Quiet.TButton"
+            button_style = "Primary.TButton" if index in {2, 4} else "Quiet.TButton"
             AnimatedButton(quick_buttons, text=label, command=command, style=button_style).grid(
-                row=0, column=index, sticky="ew", padx=(0 if index == 0 else 5, 0), pady=2
+                row=index // 3, column=index % 3, sticky="ew", padx=(0 if index % 3 == 0 else 5, 0), pady=2
             )
-            quick_buttons.columnconfigure(index, weight=1)
+            quick_buttons.columnconfigure(index % 3, weight=1)
 
         manage_card = ttk.Frame(frame, style="Card.TFrame", padding=16)
         manage_card.pack(fill="x", pady=(14, 0))
@@ -310,9 +312,7 @@ class AccountManager(tk.Tk):
         self.profile_names = sorted(path.stem for path in PROFILE_DIR.glob("*.env"))
         self.profile_list.delete(0, tk.END)
         for name in self.profile_names:
-            display_name = self.get_display_name(name)
-            label = name if display_name == name else f"{display_name}（{name}）"
-            self.profile_list.insert(tk.END, label)
+            self.profile_list.insert(tk.END, self._profile_label(name))
         if self.profile_names:
             index = self.profile_names.index(selected) if selected in self.profile_names else 0
             self.profile_list.selection_set(index)
@@ -321,6 +321,21 @@ class AccountManager(tk.Tk):
         else:
             self.status.set("未找到账号配置。请先新建配置，或从命令行运行 main.py --create-profile 名称。")
 
+    def _profile_label(self, profile: str) -> str:
+        display_name = self.get_display_name(profile)
+        label = profile if display_name == profile else f"{display_name}（{profile}）"
+        running = any(
+            name == profile and action == "监听" and proc.poll() is None
+            for name, action, proc in self.child_processes
+        )
+        try:
+            text = (PROFILE_DIR / f"{profile}.env").read_text(encoding="utf-8-sig")
+        except OSError:
+            text = ""
+        match = re.search(r"(?m)^IMAGE_GENERATION_ENABLED=(.*)$", text)
+        enabled = not match or match.group(1).strip().strip("'\"").lower() in {"1", "true", "yes", "on"}
+        return f"{'●' if running else '○'} {label}    生图{'开' if enabled else '关'}"
+
     def selected_profile(self) -> str | None:
         selection = self.profile_list.curselection()
         if not selection or selection[0] >= len(self.profile_names):
@@ -328,8 +343,13 @@ class AccountManager(tk.Tk):
         return self.profile_names[selection[0]]
 
     def manage_image_settings(self) -> None:
-        """编辑共享 .env 中的生图开关与服务配置，不在界面显示已保存密钥。"""
+        """编辑共享服务配置，并将生图开关保存到当前账号 profile。"""
         env_file = ROOT / ".env"
+        profile = self.selected_profile()
+        if not profile:
+            messagebox.showinfo("未选择账号", "请先选择要配置的账号。")
+            return
+        profile_file = PROFILE_DIR / f"{profile}.env"
         try:
             from dotenv import dotenv_values
 
@@ -347,13 +367,18 @@ class AccountManager(tk.Tk):
         body = ttk.Frame(dialog, padding=16)
         body.pack(fill="both", expand=True)
 
-        enabled = tk.BooleanVar(value=str(values.get("IMAGE_GENERATION_ENABLED", "true")).strip().lower() in {"1", "true", "yes", "on"})
+        try:
+            profile_values = dotenv_values(profile_file) if profile_file.exists() else {}
+        except (OSError, UnicodeError, ValueError) as exc:
+            messagebox.showerror("读取账号生图设置失败", str(exc))
+            return
+        enabled = tk.BooleanVar(value=str(profile_values.get("IMAGE_GENERATION_ENABLED", values.get("IMAGE_GENERATION_ENABLED", "true"))).strip().lower() in {"1", "true", "yes", "on"})
         ttk.Checkbutton(body, text="启用生图功能", variable=enabled).grid(
             row=0, column=0, columnspan=2, sticky="w", pady=(0, 10)
         )
         ttk.Label(
             body,
-            text="配置保存在项目 .env；保存后重启监听生效。API Key 留空表示保留原值，可勾选清除。",
+            text=f"当前账号：{profile}。生图开关保存到该账号；服务地址、模型和 API Key 由所有账号共享。保存后重启监听生效。",
             wraplength=570,
         ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 12))
 
@@ -399,7 +424,6 @@ class AccountManager(tk.Tk):
             try:
                 current_text = env_file.read_text(encoding="utf-8-sig") if env_file.exists() else ""
                 updates = {
-                    "IMAGE_GENERATION_ENABLED": "true" if enabled.get() else "false",
                     "WEB_SEARCH_ENABLED": "true" if search_enabled.get() else "false",
                     "OPENAI_IMAGE_BASE_URL": base_url,
                     "OPENAI_IMAGE_MODEL": model,
@@ -420,6 +444,14 @@ class AccountManager(tk.Tk):
                             current_text += "\n"
                         current_text += line + "\n"
                 env_file.write_text(current_text, encoding="utf-8")
+                profile_text = profile_file.read_text(encoding="utf-8-sig") if profile_file.exists() else ""
+                profile_line = "IMAGE_GENERATION_ENABLED=" + ("true" if enabled.get() else "false")
+                profile_pattern = re.compile(r"(?m)^IMAGE_GENERATION_ENABLED=.*$")
+                if profile_pattern.search(profile_text):
+                    profile_text = profile_pattern.sub(profile_line, profile_text, count=1)
+                else:
+                    profile_text = profile_text.rstrip() + "\n" + profile_line + "\n"
+                profile_file.write_text(profile_text, encoding="utf-8")
             except OSError as exc:
                 messagebox.showerror("保存生图设置失败", str(exc), parent=dialog)
                 return
@@ -683,6 +715,31 @@ class AccountManager(tk.Tk):
                 messagebox.showinfo("已在运行", f"{profile} 的监听进程已由此窗口启动。")
                 return
             self._launch(profile, "监听", [])
+
+    def start_all_listeners(self) -> None:
+        """为每个账号配置启动一个独立监听进程；各自读取本账号生图开关。"""
+        started = []
+        for profile in self.profile_names:
+            running = any(
+                name == profile and action == "监听" and proc.poll() is None
+                for name, action, proc in self.child_processes
+            )
+            if not running:
+                self._launch(profile, "监听", [])
+                started.append(profile)
+        self.refresh_profiles()
+        self.status.set(f"已并行启动 {len(started)} 个账号监听；每个账号使用自己的白名单与生图开关。")
+
+    def stop_all_listeners(self) -> None:
+        """停止本窗口启动的全部账号监听进程。"""
+        running = [
+            proc for _profile, action, proc in self.child_processes
+            if action == "监听" and proc.poll() is None
+        ]
+        for proc in running:
+            proc.terminate()
+        self.refresh_profiles()
+        self.status.set(f"已请求停止 {len(running)} 个账号监听进程。")
 
     def stop_listener(self) -> None:
         profile = self.selected_profile()
@@ -1343,6 +1400,15 @@ class AccountManager(tk.Tk):
 
     def _refresh_process_status(self) -> None:
         self.child_processes = [(p, a, proc) for p, a, proc in self.child_processes if proc.poll() is None]
+        if self.profile_names:
+            selected = self.selected_profile()
+            self.profile_list.delete(0, tk.END)
+            for name in self.profile_names:
+                self.profile_list.insert(tk.END, self._profile_label(name))
+            if selected in self.profile_names:
+                index = self.profile_names.index(selected)
+                self.profile_list.selection_set(index)
+                self.profile_list.activate(index)
         self.after(1200, self._refresh_process_status)
 
 

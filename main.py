@@ -70,12 +70,14 @@ def create_profile(name: str, copy_settings_from: str | None = None) -> Path:
     phone = ""
     username = ""
     allowed_chat_ids = source.get("ALLOWED_CHAT_IDS") or ""
+    image_generation_enabled = source.get("IMAGE_GENERATION_ENABLED") or "true"
     profile_file.write_text(
         "# 此文件仅保存本账号的 Telegram 设置；不要放 API 密钥。\n"
         f"TELEGRAM_PHONE={phone}\n"
         f"TELEGRAM_USERNAME={username}\n"
         f"ALLOWED_CHAT_IDS={allowed_chat_ids}\n"
         "ALLOWED_SENDER_IDS=\nOWNER_USER_IDS=\nOWNER_USERNAMES=\n"
+        f"IMAGE_GENERATION_ENABLED={image_generation_enabled}\n"
         f"SESSION_PATH=data/profiles/{name}/telegram\n"
         f"STATE_PATH=data/profiles/{name}/state.sqlite3\n",
         encoding="utf-8",
@@ -158,6 +160,9 @@ class Config:
             }
             for key, default in account_defaults.items():
                 env[key] = values.get(key) or default
+            profile_image_enabled = values.get("IMAGE_GENERATION_ENABLED")
+            if profile_image_enabled is not None and str(profile_image_enabled).strip():
+                env["IMAGE_GENERATION_ENABLED"] = str(profile_image_enabled)
         try:
             api_id = int(env["TELEGRAM_API_ID"])
         except (KeyError, ValueError) as exc:
