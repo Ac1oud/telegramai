@@ -1,0 +1,22 @@
+[Unit]
+Description=Telegram Group Mention Assistant
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=telegram-ai
+Group=telegram-ai
+WorkingDirectory=/opt/tg-group-assistant
+EnvironmentFile=/opt/tg-group-assistant/.env
+ExecStart=/opt/tg-group-assistant/.venv/bin/python /opt/tg-group-assistant/main.py
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/tg-group-assistant/data
+
+[Install]
+WantedBy=multi-user.target
