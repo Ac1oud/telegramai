@@ -16,6 +16,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from urllib.parse import urlparse
 
 from project_updater import GitUpdater, UpdateError, UpdateStatus
+from ui_effects import AnimatedButton, Animator, animate_window_open, mix_color
 
 
 ROOT = Path(__file__).resolve().parent
@@ -37,9 +38,10 @@ def python_console_executable() -> str:
 class AccountManager(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("Telegram 账号切换")
-        self.geometry("760x700")
-        self.minsize(700, 620)
+        animate_window_open(self)
+        self.title("Telegram AI · 账号工作台")
+        self.geometry("820x730")
+        self.minsize(760, 720)
         self.python = python_console_executable()
         # Tkinter uses `self.children` internally as a widget dictionary.
         self.child_processes: list[tuple[str, str, subprocess.Popen[bytes]]] = []
@@ -49,22 +51,24 @@ class AccountManager(tk.Tk):
         self.update_buttons: list[ttk.Button] = []
         self.protocol("WM_DELETE_WINDOW", self._close_manager)
         self._configure_styles()
+        self.motion = Animator(self)
+        self._last_selected_profile: str | None = None
+        self._load_app_icon()
         self._build_ui()
         self.refresh_profiles()
-        self.after(25, self._fade_in)
         self.after(1200, self._refresh_process_status)
 
     def _configure_styles(self) -> None:
         """统一窗口配色与控件状态，让原生 Tk 界面更清爽。"""
         self.colors = {
-            "background": "#F8F3F8",
+            "background": "#F7F5FA",
             "surface": "#FFFFFF",
-            "text": "#352C3E",
-            "muted": "#786D80",
-            "accent": "#A982C8",
-            "accent_hover": "#C18BCB",
+            "text": "#342B43",
+            "muted": "#81768E",
+            "accent": "#956DC1",
+            "accent_hover": "#A981D0",
             "danger": "#A94E71",
-            "border": "#E9DFEC",
+            "border": "#E9E2F0",
         }
         self.configure(background=self.colors["background"])
         style = ttk.Style(self)
@@ -72,8 +76,16 @@ class AccountManager(tk.Tk):
             style.theme_use("clam")
         except tk.TclError:
             pass
+        style.configure("TFrame", background=self.colors["background"])
+        style.configure("TLabel", background=self.colors["background"], foreground=self.colors["text"], font=("Microsoft YaHei UI", 9))
+        style.configure("TCheckbutton", background=self.colors["background"], foreground=self.colors["text"], font=("Microsoft YaHei UI", 9))
+        style.configure("TButton", background="#F3EFF8", foreground="#51445F", padding=(10, 7), borderwidth=0, font=("Microsoft YaHei UI", 9))
+        style.map("TButton", background=[("pressed", "#DCCCEB"), ("active", "#E8DDF2")])
         style.configure("App.TFrame", background=self.colors["background"])
-        style.configure("Card.TFrame", background=self.colors["surface"], borderwidth=1, relief="solid")
+        style.configure(
+            "Card.TFrame", background=self.colors["surface"], borderwidth=1, relief="solid",
+            bordercolor=self.colors["border"], lightcolor=self.colors["border"], darkcolor=self.colors["border"],
+        )
         style.configure("CardInner.TFrame", background=self.colors["surface"], borderwidth=0, relief="flat")
         style.configure(
             "Title.TLabel", background=self.colors["background"], foreground=self.colors["text"],
@@ -93,7 +105,7 @@ class AccountManager(tk.Tk):
         )
         style.configure(
             "Primary.TButton", background=self.colors["accent"], foreground="#FFFFFF",
-            padding=(12, 9), borderwidth=0, relief="flat", focuscolor=self.colors["accent"],
+            padding=(12, 10), borderwidth=0, relief="flat", focuscolor="#E4D7F2",
             font=("Microsoft YaHei UI", 9, "bold"),
         )
         style.map(
@@ -102,34 +114,49 @@ class AccountManager(tk.Tk):
             foreground=[("!disabled", "#FFFFFF")],
         )
         style.configure(
-            "Quiet.TButton", background="#F0E8F5", foreground="#51445B",
-            padding=(10, 9), borderwidth=0, relief="flat", focuscolor="#F0E8F5",
+            "Quiet.TButton", background="#F3EFF8", foreground="#51445F",
+            padding=(10, 10), borderwidth=0, relief="flat", focuscolor="#CBB5E1",
             font=("Microsoft YaHei UI", 9),
         )
-        style.map("Quiet.TButton", background=[("pressed", "#E3D5EC"), ("active", "#E9DDF0")])
+        style.map("Quiet.TButton", background=[("pressed", "#DCCCEB"), ("active", "#E8DDF2")])
         style.configure(
             "Danger.TButton", background="#F9EAF0", foreground=self.colors["danger"],
-            padding=(10, 9), borderwidth=0, relief="flat", focuscolor="#F9EAF0",
+            padding=(10, 10), borderwidth=0, relief="flat", focuscolor="#E6B7C9",
             font=("Microsoft YaHei UI", 9),
         )
         style.map("Danger.TButton", background=[("pressed", "#F0D3E0"), ("active", "#F5DFE8")])
         style.configure("Vertical.TScrollbar", background="#E9DFEC", troughcolor=self.colors["surface"], borderwidth=0)
 
-    def _fade_in(self, alpha: float = 0.72) -> None:
-        """窗口轻柔淡入；系统不支持透明度时直接保持正常显示。"""
+    def _load_app_icon(self) -> None:
+        """窗口、任务栏和页面共用图标；资源缺失时仍能启动。"""
+        self.header_icon: tk.PhotoImage | None = None
         try:
-            self.attributes("-alpha", alpha)
-        except tk.TclError:
-            return
-        if alpha >= 1.0:
-            return
-        self.after(16, lambda: self._fade_in(min(1.0, alpha + 0.07)))
+            self.app_icon = tk.PhotoImage(file=str(ROOT / "assets" / "app-icon-64.png"))
+            self.header_icon = self.app_icon
+            self.iconphoto(True, self.app_icon)
+            if os.name == "nt":
+                self.iconbitmap(default=str(ROOT / "assets" / "app-icon.ico"))
+                self.iconbitmap(str(ROOT / "assets" / "app-icon.ico"))
+        except (tk.TclError, OSError):
+            pass
+
+    def _new_dialog(self, parent: tk.Misc | None = None) -> tk.Toplevel:
+        dialog = tk.Toplevel(parent or self)
+        animate_window_open(dialog)
+        if hasattr(self, "app_icon"):
+            try:
+                dialog.iconphoto(False, self.app_icon)
+                if os.name == "nt":
+                    dialog.iconbitmap(str(ROOT / "assets" / "app-icon.ico"))
+            except tk.TclError:
+                pass
+        return dialog
 
     def _draw_header(self, canvas: tk.Canvas) -> None:
         """绘制莫奈风的浅粉、薰衣草紫与淡蓝渐变。"""
         canvas.delete("all")
         width = max(canvas.winfo_width(), 400)
-        height = max(canvas.winfo_height(), 94)
+        height = max(canvas.winfo_height(), 106)
         stops = [(0.0, (248, 222, 231)), (0.52, (235, 222, 244)), (1.0, (220, 231, 246))]
         for x in range(0, width, 3):
             position = x / max(1, width - 1)
@@ -139,19 +166,22 @@ class AccountManager(tk.Tk):
                 f"{round(a + (b - a) * amount):02x}" for a, b in zip(left[1], right[1])
             )
             canvas.create_rectangle(x, 0, x + 3, height, fill=color, outline=color)
+        if self.header_icon is not None:
+            canvas.create_image(24, height / 2, image=self.header_icon, anchor="w")
+        title_x = 106 if self.header_icon is not None else 24
         canvas.create_text(
-            20, 27, anchor="w", text="Telegram 账号工作台",
+            title_x, 36, anchor="w", text="Telegram 账号工作台",
             fill=self.colors["text"], font=("Microsoft YaHei UI", 20, "bold"),
         )
         canvas.create_text(
-            21, 61, anchor="w", text="管理登录会话、监听范围和触发权限",
+            title_x + 1, 72, anchor="w", text="管理登录会话、监听范围和触发权限",
             fill=self.colors["muted"], font=("Microsoft YaHei UI", 9),
         )
-        badge_w = 64
+        badge_w = 76
         badge_x = width - badge_w - 18
-        canvas.create_rectangle(badge_x, 27, badge_x + badge_w, 40, fill="#F7F2FA", outline="")
+        canvas.create_rectangle(badge_x, 27, badge_x + badge_w, 48, fill="#F7F2FA", outline="")
         canvas.create_text(
-            badge_x + badge_w / 2, 33, text="LOCAL",
+            badge_x + badge_w / 2, 37, text="多账号管理",
             fill="#87639F", font=("Microsoft YaHei UI", 8, "bold"),
         )
 
@@ -159,7 +189,7 @@ class AccountManager(tk.Tk):
         frame = ttk.Frame(self, style="App.TFrame", padding=(24, 20, 24, 18))
         frame.pack(fill="both", expand=True)
 
-        header = tk.Canvas(frame, height=94, highlightthickness=0, bd=0)
+        header = tk.Canvas(frame, height=106, highlightthickness=0, bd=0)
         header.pack(fill="x", pady=(0, 16))
         header.bind("<Configure>", lambda _event: self._draw_header(header))
         self._draw_header(header)
@@ -169,7 +199,7 @@ class AccountManager(tk.Tk):
         account_heading = ttk.Frame(account_card, style="CardInner.TFrame")
         account_heading.pack(fill="x", pady=(0, 10))
         ttk.Label(account_heading, text="账号档案", style="CardTitle.TLabel").pack(side="left")
-        ttk.Label(account_heading, text="选择后执行下方操作", style="CardHint.TLabel").pack(side="right")
+        ttk.Label(account_heading, text="选中账号后按 Del 可删除配置", style="CardHint.TLabel").pack(side="right")
 
         list_frame = ttk.Frame(account_card, style="CardInner.TFrame")
         list_frame.pack(fill="both", expand=True)
@@ -180,9 +210,9 @@ class AccountManager(tk.Tk):
             activestyle="none",
             bg=self.colors["surface"],
             fg=self.colors["text"],
-            selectbackground="#EDE3F4",
-            selectforeground=self.colors["accent"],
-            font=("Microsoft YaHei UI", 10),
+            selectbackground="#EEE5F5",
+            selectforeground="#67468B",
+            font=("Microsoft YaHei UI", 11),
             relief="flat",
             borderwidth=0,
             highlightthickness=1,
@@ -195,6 +225,8 @@ class AccountManager(tk.Tk):
         scroll.pack(side="right", fill="y")
         self.profile_list.configure(yscrollcommand=scroll.set)
         self.profile_list.bind("<<ListboxSelect>>", self._selection_changed)
+        self.profile_list.bind("<KeyPress-Delete>", lambda _event: "break")
+        self.profile_list.bind("<KeyRelease-Delete>", self._delete_profile_shortcut)
 
         quick_card = ttk.Frame(frame, style="Card.TFrame", padding=16)
         quick_card.pack(fill="x", pady=(14, 0))
@@ -209,7 +241,7 @@ class AccountManager(tk.Tk):
         quick_buttons.pack(fill="x")
         for index, (label, command) in enumerate(quick_actions):
             button_style = "Primary.TButton" if index == 2 else "Quiet.TButton"
-            ttk.Button(quick_buttons, text=label, command=command, style=button_style).grid(
+            AnimatedButton(quick_buttons, text=label, command=command, style=button_style).grid(
                 row=0, column=index, sticky="ew", padx=(0 if index == 0 else 5, 0), pady=2
             )
             quick_buttons.columnconfigure(index, weight=1)
@@ -235,7 +267,7 @@ class AccountManager(tk.Tk):
         manage_buttons.pack(fill="x")
         for index, (label, command) in enumerate(manage_actions):
             button_style = "Danger.TButton" if label == "删除账号配置" else "Quiet.TButton"
-            button = ttk.Button(manage_buttons, text=label, command=command, style=button_style)
+            button = AnimatedButton(manage_buttons, text=label, command=command, style=button_style)
             button.grid(
                 row=index // 4, column=index % 4, sticky="ew", padx=3, pady=3
             )
@@ -252,12 +284,23 @@ class AccountManager(tk.Tk):
         )
         self.status_dot.pack(side="left", padx=(2, 8))
         self.status_dot.create_oval(2, 2, 10, 10, fill=self.colors["accent"], outline="")
-        ttk.Label(footer, textvariable=self.status, style="Subtitle.TLabel", wraplength=680).pack(side="left", fill="x", expand=True)
+        self.status_label = ttk.Label(footer, textvariable=self.status, style="Subtitle.TLabel", wraplength=710)
+        self.status_label.pack(side="left", fill="x", expand=True)
+        footer.bind("<Configure>", lambda event: self.status_label.configure(wraplength=max(300, event.width - 28)))
+        self.status.trace_add("write", self._animate_status)
+
+    def _animate_status(self, *_args: str) -> None:
+        self.motion.animate(
+            "status", 260,
+            lambda progress: self.status_label.configure(
+                foreground=mix_color(self, self.colors["accent"], self.colors["muted"], progress),
+            ),
+        )
 
     def refresh_profiles(self) -> None:
         PROFILE_DIR.mkdir(parents=True, exist_ok=True)
-        self.profile_names = sorted(path.stem for path in PROFILE_DIR.glob("*.env"))
         selected = self.selected_profile()
+        self.profile_names = sorted(path.stem for path in PROFILE_DIR.glob("*.env"))
         self.profile_list.delete(0, tk.END)
         for name in self.profile_names:
             display_name = self.get_display_name(name)
@@ -288,7 +331,7 @@ class AccountManager(tk.Tk):
             messagebox.showerror("读取生图设置失败", str(exc))
             return
 
-        dialog = tk.Toplevel(self)
+        dialog = self._new_dialog()
         dialog.title("图片生成设置")
         dialog.geometry("620x360")
         dialog.minsize(560, 330)
@@ -369,8 +412,8 @@ class AccountManager(tk.Tk):
 
         buttons = ttk.Frame(body)
         buttons.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(16, 0))
-        ttk.Button(buttons, text="保存设置", style="Primary.TButton", command=save).pack(side="right")
-        ttk.Button(buttons, text="取消", command=dialog.destroy).pack(side="right", padx=(0, 8))
+        AnimatedButton(buttons, text="保存设置", style="Primary.TButton", command=save).pack(side="right")
+        AnimatedButton(buttons, text="取消", command=dialog.destroy).pack(side="right", padx=(0, 8))
 
     def manage_model_settings(self) -> None:
         """编辑共享 .env 中的聊天模型名称、API Key 和 API 地址。"""
@@ -383,7 +426,7 @@ class AccountManager(tk.Tk):
             messagebox.showerror("读取语言模型设置失败", str(exc))
             return
 
-        dialog = tk.Toplevel(self)
+        dialog = self._new_dialog()
         dialog.title("语言模型管理")
         dialog.geometry("620x350")
         dialog.minsize(560, 320)
@@ -453,8 +496,8 @@ class AccountManager(tk.Tk):
 
         buttons = ttk.Frame(body)
         buttons.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(14, 0))
-        ttk.Button(buttons, text="保存设置", style="Primary.TButton", command=save).pack(side="right")
-        ttk.Button(buttons, text="取消", command=dialog.destroy).pack(side="right", padx=(0, 8))
+        AnimatedButton(buttons, text="保存设置", style="Primary.TButton", command=save).pack(side="right")
+        AnimatedButton(buttons, text="取消", command=dialog.destroy).pack(side="right", padx=(0, 8))
 
     def check_project_updates(self) -> None:
         """在后台检查 GitHub 更新，避免网络等待阻塞界面。"""
@@ -545,6 +588,14 @@ class AccountManager(tk.Tk):
         profile = self.selected_profile()
         if not profile:
             return
+        if profile != self._last_selected_profile:
+            self._last_selected_profile = profile
+            self.motion.animate(
+                "account-selection", 200,
+                lambda progress: self.profile_list.configure(
+                    selectbackground=mix_color(self, "#D9C7EE", "#EEE5F5", progress),
+                ),
+            )
         text = (PROFILE_DIR / f"{profile}.env").read_text(encoding="utf-8-sig")
         session_match = re.search(r"(?m)^SESSION_PATH=(.+)$", text)
         session_value = session_match.group(1).strip() if session_match else f"data/profiles/{profile}/telegram"
@@ -753,32 +804,47 @@ class AccountManager(tk.Tk):
         except Exception as exc:
             messagebox.showerror("读取路径失败", str(exc))
 
+    def _delete_profile_shortcut(self, event: tk.Event) -> str:
+        """仅账号列表响应 Del；松开时处理，避免 Windows 长按重复弹窗。"""
+        if event.widget is self.profile_list and self.focus_get() is self.profile_list:
+            self.delete_profile()
+        return "break"
+
     def delete_profile(self) -> None:
+        """快捷键与按钮共用确认流程，只移除配置，保留账号数据。"""
+        if self.__dict__.get("_delete_in_progress", False):
+            return
         profile = self.selected_profile()
         if not profile:
-            messagebox.showinfo("删除账号配置", "请先选择一个账号配置。")
             return
-        running = [
-            proc for name, _action, proc in self.child_processes
-            if name == profile and proc.poll() is None
-        ]
-        if running:
-            messagebox.showwarning("账号正在运行", "请先停止此账号由本窗口启动的进程，再删除配置。")
-            return
-        if not messagebox.askyesno(
-            "确认删除账号配置",
-            f"确定从切换器中移除 {profile} 吗？\n\n"
-            "只删除 profiles 下的配置文件；Telegram session 和状态数据库会保留在原处。",
-            icon="warning",
-            parent=self,
-        ):
-            return
+        self._delete_in_progress = True
         try:
-            (PROFILE_DIR / f"{profile}.env").unlink()
-            self.refresh_profiles()
-            self.status.set(f"已从切换器移除 {profile}；session 和状态数据库保留。")
-        except Exception as exc:
-            messagebox.showerror("删除失败", str(exc))
+            running = [
+                proc for name, _action, proc in self.child_processes
+                if name == profile and proc.poll() is None
+            ]
+            if running:
+                messagebox.showwarning(
+                    "账号正在运行", "请先停止此账号由本窗口启动的进程，再删除配置。", parent=self,
+                )
+                return
+            if not messagebox.askyesno(
+                "确认删除账号配置",
+                f"确定从切换器中移除 {profile} 吗？\n\n"
+                "只删除 profiles 下的配置文件；Telegram session 和状态数据库会保留在原处。",
+                icon="warning",
+                default=messagebox.NO,
+                parent=self,
+            ):
+                return
+            try:
+                (PROFILE_DIR / f"{profile}.env").unlink()
+                self.refresh_profiles()
+                self.status.set(f"已从切换器移除 {profile}；session 和状态数据库保留。")
+            except Exception as exc:
+                messagebox.showerror("删除失败", str(exc), parent=self)
+        finally:
+            self._delete_in_progress = False
 
     def manage_chat_whitelist(self) -> None:
         """可视化查看、添加和移除当前账号配置允许监听的群组 ID。"""
@@ -796,7 +862,7 @@ class AccountManager(tk.Tk):
             messagebox.showerror("白名单格式错误", f"{profile} 配置中的群组 ID 不是逗号分隔的数字。")
             return
 
-        dialog = tk.Toplevel(self)
+        dialog = self._new_dialog()
         dialog.title(f"{self.get_display_name(profile)} - 群白名单")
         dialog.geometry("480x360")
         dialog.transient(self)
@@ -861,7 +927,7 @@ class AccountManager(tk.Tk):
         ttk.Label(dialog, textvariable=fetch_status, wraplength=440).pack(anchor="w", padx=12, pady=(0, 8))
 
         def show_group_picker(groups: list[dict[str, object]]) -> None:
-            picker = tk.Toplevel(dialog)
+            picker = self._new_dialog(dialog)
             picker.title("选择要加入白名单的群")
             picker.geometry("520x400")
             picker.transient(dialog)
@@ -896,7 +962,7 @@ class AccountManager(tk.Tk):
 
             picker_controls = ttk.Frame(picker, padding=(12, 0, 12, 12))
             picker_controls.pack(fill="x")
-            ttk.Button(picker_controls, text="加入白名单", command=add_selected_groups).pack(side="right")
+            AnimatedButton(picker_controls, text="加入白名单", command=add_selected_groups).pack(side="right")
 
         def fetch_groups() -> None:
             active = [
@@ -973,11 +1039,11 @@ class AccountManager(tk.Tk):
         refresh_ids()
         controls = ttk.Frame(dialog, padding=(12, 0, 12, 12))
         controls.pack(fill="x")
-        fetch_button = ttk.Button(controls, text="获取群 ID", command=fetch_groups)
+        fetch_button = AnimatedButton(controls, text="获取群 ID", command=fetch_groups)
         fetch_button.pack(side="left", padx=(0, 6))
-        ttk.Button(controls, text="添加群组 ID", command=add_ids).pack(side="left", padx=(0, 6))
-        ttk.Button(controls, text="移除选中项", command=remove_ids).pack(side="left")
-        ttk.Button(controls, text="保存", command=save_ids).pack(side="right")
+        AnimatedButton(controls, text="添加群组 ID", command=add_ids).pack(side="left", padx=(0, 6))
+        AnimatedButton(controls, text="移除选中项", command=remove_ids).pack(side="left")
+        AnimatedButton(controls, text="保存", command=save_ids).pack(side="right")
 
     def manage_sender_whitelist(self) -> None:
         """分别管理可触发用户与主人身份，并支持联系人多选导入。"""
@@ -1008,7 +1074,7 @@ class AccountManager(tk.Tk):
             messagebox.showerror("白名单格式错误", f"{profile} 配置中的用户 ID 或主人用户名格式有误。")
             return
 
-        dialog = tk.Toplevel(self)
+        dialog = self._new_dialog()
         dialog.title(f"{self.get_display_name(profile)} - 用户权限白名单")
         dialog.geometry("760x450")
         dialog.minsize(700, 400)
@@ -1090,10 +1156,10 @@ class AccountManager(tk.Tk):
             values[:] = [value for index, value in enumerate(values) if index not in selected]
             populate(listing, values)
 
-        ttk.Button(trigger_panel, text="添加多个 ID", command=lambda: add_ids_to(sender_ids, trigger_list, "可触发名单")).pack(fill="x", pady=(8, 3))
-        ttk.Button(trigger_panel, text="移除选中项", command=lambda: remove_selected(sender_ids, trigger_list, "可触发名单")).pack(fill="x")
-        ttk.Button(owner_panel, text="添加多个主人 ID", command=lambda: add_ids_to(owner_ids, owner_list, "主人名单")).pack(fill="x", pady=(6, 3))
-        ttk.Button(owner_panel, text="移除选中的 ID", command=lambda: remove_selected(owner_ids, owner_list, "主人名单")).pack(fill="x")
+        AnimatedButton(trigger_panel, text="添加多个 ID", command=lambda: add_ids_to(sender_ids, trigger_list, "可触发名单")).pack(fill="x", pady=(8, 3))
+        AnimatedButton(trigger_panel, text="移除选中项", command=lambda: remove_selected(sender_ids, trigger_list, "可触发名单")).pack(fill="x")
+        AnimatedButton(owner_panel, text="添加多个主人 ID", command=lambda: add_ids_to(owner_ids, owner_list, "主人名单")).pack(fill="x", pady=(6, 3))
+        AnimatedButton(owner_panel, text="移除选中的 ID", command=lambda: remove_selected(owner_ids, owner_list, "主人名单")).pack(fill="x")
 
         def add_owner_usernames() -> None:
             value = simpledialog.askstring(
@@ -1118,8 +1184,8 @@ class AccountManager(tk.Tk):
             owner_usernames[:] = [name for index, name in enumerate(owner_usernames) if index not in selected]
             populate_usernames()
 
-        ttk.Button(owner_panel, text="添加主人用户名", command=add_owner_usernames).pack(fill="x", pady=(6, 3))
-        ttk.Button(owner_panel, text="移除选中的用户名", command=remove_owner_usernames).pack(fill="x")
+        AnimatedButton(owner_panel, text="添加主人用户名", command=add_owner_usernames).pack(fill="x", pady=(6, 3))
+        AnimatedButton(owner_panel, text="移除选中的用户名", command=remove_owner_usernames).pack(fill="x")
 
         fetch_status = tk.StringVar(value="可读取当前账号 Telegram 联系人，批量加入任一名单。")
         ttk.Label(dialog, textvariable=fetch_status, wraplength=720).grid(
@@ -1127,7 +1193,7 @@ class AccountManager(tk.Tk):
         )
 
         def add_contact_picker(contacts: list[dict[str, object]]) -> None:
-            picker = tk.Toplevel(dialog)
+            picker = self._new_dialog(dialog)
             picker.title("选择 Telegram 联系人")
             picker.geometry("580x430")
             picker.transient(dialog)
@@ -1168,8 +1234,8 @@ class AccountManager(tk.Tk):
 
             buttons = ttk.Frame(picker, padding=(12, 0, 12, 12))
             buttons.pack(fill="x")
-            ttk.Button(buttons, text="加入可触发名单", command=lambda: import_selected(sender_ids, trigger_list, "可触发名单")).pack(side="left", padx=(0, 8))
-            ttk.Button(buttons, text="加入主人名单", command=lambda: import_selected(owner_ids, owner_list, "主人名单")).pack(side="left")
+            AnimatedButton(buttons, text="加入可触发名单", command=lambda: import_selected(sender_ids, trigger_list, "可触发名单")).pack(side="left", padx=(0, 8))
+            AnimatedButton(buttons, text="加入主人名单", command=lambda: import_selected(owner_ids, owner_list, "主人名单")).pack(side="left")
 
         def fetch_contacts() -> None:
             active = [
@@ -1221,7 +1287,7 @@ class AccountManager(tk.Tk):
 
         controls = ttk.Frame(dialog, padding=(12, 0, 12, 12))
         controls.grid(row=3, column=0, sticky="ew")
-        fetch_button = ttk.Button(controls, text="获取联系人用户 ID", command=fetch_contacts)
+        fetch_button = AnimatedButton(controls, text="获取联系人用户 ID", command=fetch_contacts)
         fetch_button.pack(side="left")
 
         def save_user_lists() -> None:
@@ -1242,7 +1308,7 @@ class AccountManager(tk.Tk):
             )
             dialog.destroy()
 
-        ttk.Button(controls, text="保存两份名单", style="Primary.TButton", command=save_user_lists).pack(side="right")
+        AnimatedButton(controls, text="保存两份名单", style="Primary.TButton", command=save_user_lists).pack(side="right")
 
     def _refresh_process_status(self) -> None:
         self.child_processes = [(p, a, proc) for p, a, proc in self.child_processes if proc.poll() is None]
@@ -1250,4 +1316,12 @@ class AccountManager(tk.Tk):
 
 
 if __name__ == "__main__":
+    if os.name == "nt":
+        # 将本程序的任务栏图标与通用 Python 进程分组区分。
+        import ctypes
+
+        try:
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Ac1oud.TelegramAI.AccountManager")
+        except (AttributeError, OSError):
+            pass
     AccountManager().mainloop()
