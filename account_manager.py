@@ -707,13 +707,12 @@ class AccountManager(tk.Tk):
         animate_window_close(self)
 
     def new_profile(self) -> None:
-        source = self.selected_profile()
         name = simpledialog.askstring("新建账号配置", "配置名（英文字母、数字、下划线或连字符）：", parent=self)
         if not name:
             return
         phone = simpledialog.askstring("手机号（可选）", "手机号国际格式，例如 +1...；留空可之后用二维码登录：", parent=self)
         try:
-            path = create_profile(name, copy_settings_from=source)
+            path = create_profile(name)
             if phone:
                 phone = re.sub(r"[\s()-]", "", phone)
                 if not re.fullmatch(r"\+[1-9]\d{6,14}", phone):
@@ -765,7 +764,6 @@ class AccountManager(tk.Tk):
                 messagebox.showinfo("已经导入", f"此 session 已登记为 {profile_file.stem}。")
                 return
 
-        source = self.selected_profile()
         default_name = f"imported_{session_base.name}"
         name = simpledialog.askstring(
             "登记旧账号",
@@ -776,7 +774,7 @@ class AccountManager(tk.Tk):
         if not name:
             return
         try:
-            profile_file = create_profile(name, copy_settings_from=source)
+            profile_file = create_profile(name)
             relative_session = session_base.relative_to(ROOT).as_posix()
             text = profile_file.read_text(encoding="utf-8")
             text = re.sub(
@@ -892,7 +890,7 @@ class AccountManager(tk.Tk):
         dialog.grab_set()
         ttk.Label(
             dialog,
-            text="只有列表中的群会被监听；添加或删除群组 ID 后需重启该账号的监听进程生效。",
+            text=f"账号：{self.get_display_name(profile)}（{profile}）\n仅保存至本账号配置；列表中的群才会被监听。修改后需重启该账号监听。",
             wraplength=440,
         ).pack(anchor="w", padx=12, pady=(12, 8))
         body = ttk.Frame(dialog, padding=(12, 0, 12, 8))
@@ -937,6 +935,7 @@ class AccountManager(tk.Tk):
 
         def save_ids() -> None:
             nonlocal text
+            text = profile_file.read_text(encoding="utf-8-sig")
             line = "ALLOWED_CHAT_IDS=" + ",".join(str(chat_id) for chat_id in chat_ids)
             if re.search(r"(?m)^ALLOWED_CHAT_IDS=.*$", text):
                 text = re.sub(r"(?m)^ALLOWED_CHAT_IDS=.*$", lambda _match: line, text, count=1)

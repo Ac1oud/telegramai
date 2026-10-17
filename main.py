@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from dotenv import dotenv_values, load_dotenv
+from dotenv import dotenv_values
 from openai import AsyncOpenAI
 from telethon import TelegramClient, events, functions, types
 from telethon.errors import (
@@ -74,14 +74,15 @@ def create_profile(name: str, copy_settings_from: str | None = None) -> Path:
         f"TELEGRAM_PHONE={phone}\n"
         f"TELEGRAM_USERNAME={username}\n"
         f"ALLOWED_CHAT_IDS={allowed_chat_ids}\n"
+        "ALLOWED_SENDER_IDS=\nOWNER_USER_IDS=\nOWNER_USERNAMES=\n"
         f"SESSION_PATH=data/profiles/{name}/telegram\n"
         f"STATE_PATH=data/profiles/{name}/state.sqlite3\n",
         encoding="utf-8",
     )
     return profile_file
-def _env_int(name: str, default: int) -> int:
+def _env_int(name: str, default: int, env=None) -> int:
     """读取整数配置；配置格式错误时给出明确提示。"""
-    value = os.getenv(name)
+    value = (os.environ if env is None else env).get(name)
     if value is None or not value.strip():
         return default
     try:
@@ -90,9 +91,9 @@ def _env_int(name: str, default: int) -> int:
         raise ValueError(f"配置项 {name} 必须填写整数") from exc
 
 
-def _env_float(name: str, default: float) -> float:
+def _env_float(name: str, default: float, env=None) -> float:
     """读取小数配置；配置格式错误时给出明确提示。"""
-    value = os.getenv(name)
+    value = (os.environ if env is None else env).get(name)
     if value is None or not value.strip():
         return default
     try:
@@ -139,28 +140,34 @@ class Config:
 
     @classmethod
     def load(cls, *, list_chats: bool = False, profile: str | None = None) -> "Config":
-        # 只从项目目录下的 .env 读取本地配置，不把凭据写进源码。
-        load_dotenv(ROOT / ".env")
+        # Build a fresh snapshot; loading one account never mutates another's environment.
+        env = {**{k: v for k, v in dotenv_values(ROOT / ".env", interpolate=False).items() if v is not None}, **os.environ}
         if profile:
             profile = _validate_profile_name(profile)
             profile_file = PROFILE_DIR / f"{profile}.env"
             if not profile_file.exists():
-                raise FileNotFoundError(
-                    f"账号配置 {profile} 不存在；先运行 `python main.py --create-profile {profile}`。"
-                )
-            # profile 文件只覆盖 Telegram 账号相关配置，模型 API 凭据仍从 .env 读取。
-            load_dotenv(profile_file, override=True)
+                raise FileNotFoundError(f"账号配置 {profile} 不存在")
+            values = dotenv_values(profile_file, interpolate=False)
+            account_defaults = {
+                "TELEGRAM_PHONE": "", "TELEGRAM_USERNAME": "",
+                "ALLOWED_CHAT_IDS": "", "ALLOWED_SENDER_IDS": "",
+                "OWNER_USER_IDS": "", "OWNER_USERNAMES": "",
+                "SESSION_PATH": f"data/profiles/{profile}/telegram",
+                "STATE_PATH": f"data/profiles/{profile}/state.sqlite3",
+            }
+            for key, default in account_defaults.items():
+                env[key] = values.get(key) or default
         try:
-            api_id = int(os.environ["TELEGRAM_API_ID"])
+            api_id = int(env["TELEGRAM_API_ID"])
         except (KeyError, ValueError) as exc:
             raise ValueError("请在 .env 中填写数字格式的 TELEGRAM_API_ID") from exc
 
-        api_hash = os.getenv("TELEGRAM_API_HASH", "").strip()
+        api_hash = env.get("TELEGRAM_API_HASH", "").strip()
         if not api_hash:
             raise ValueError("请在 .env 中填写 TELEGRAM_API_HASH")
 
         # 白名单为空时，正常监听模式拒绝启动，避免误在所有群里响应。
-        raw_chat_ids = os.getenv("ALLOWED_CHAT_IDS", "").strip()
+        raw_chat_ids = env.get("ALLOWED_CHAT_IDS", "").strip()
         try:
             allowed_chat_ids = frozenset(
                 int(part.strip()) for part in raw_chat_ids.split(",") if part.strip()
@@ -170,10 +177,10 @@ class Config:
         if not list_chats and not allowed_chat_ids:
             raise ValueError(
                 "ALLOWED_CHAT_IDS 还没有填写。先运行 `python main.py --list-chats`，"
-                "再把允许监听的群组 ID 写入 .env。"
+                "再在该账号的群白名单中添加允许监听的群组 ID。"
             )
 
-        raw_sender_ids = os.getenv("ALLOWED_SENDER_IDS", "").strip()
+        raw_sender_ids = env.get("ALLOWED_SENDER_IDS", "").strip()
         try:
             allowed_sender_ids = frozenset(
                 int(part.strip()) for part in raw_sender_ids.split(",") if part.strip()
@@ -181,7 +188,7 @@ class Config:
         except ValueError as exc:
             raise ValueError("ALLOWED_SENDER_IDS 必须是逗号分隔的数字用户 ID") from exc
 
-        raw_owner_ids = os.getenv("OWNER_USER_IDS", "").strip()
+        raw_owner_ids = env.get("OWNER_USER_IDS", "").strip()
         try:
             owner_user_ids = frozenset(
                 int(part.strip()) for part in raw_owner_ids.split(",") if part.strip()
@@ -190,7 +197,7 @@ class Config:
             raise ValueError("OWNER_USER_IDS 必须是逗号分隔的数字用户 ID") from exc
         owner_usernames = frozenset(
             username.strip().lstrip("@").casefold()
-            for username in os.getenv("OWNER_USERNAMES", "").split(",")
+            for username in env.get("OWNER_USERNAMES", "").split(",")
             if username.strip().lstrip("@")
         )
         if any(not re.fullmatch(r"[a-zA-Z0-9_]{5,32}", username) for username in owner_usernames):
@@ -198,12 +205,12 @@ class Config:
         if any(user_id <= 0 for user_id in (*allowed_sender_ids, *owner_user_ids)):
             raise ValueError("用户白名单 ID 必须是正整数")
 
-        context_messages = _env_int("CONTEXT_MESSAGES", 5)
-        context_chars = _env_int("CONTEXT_MAX_CHARS", 2000)
-        chat_cooldown = _env_int("CHAT_COOLDOWN_SECONDS", 5)
-        reply_delay = _env_float("REPLY_DELAY_SECONDS", 2.0)
-        global_interval = _env_float("GLOBAL_SEND_INTERVAL_SECONDS", 5.0)
-        max_reply_utf16_units = _env_int("MAX_REPLY_UTF16_UNITS", 3500)
+        context_messages = _env_int("CONTEXT_MESSAGES", 5, env)
+        context_chars = _env_int("CONTEXT_MAX_CHARS", 2000, env)
+        chat_cooldown = _env_int("CHAT_COOLDOWN_SECONDS", 5, env)
+        reply_delay = _env_float("REPLY_DELAY_SECONDS", 2.0, env)
+        global_interval = _env_float("GLOBAL_SEND_INTERVAL_SECONDS", 5.0, env)
+        max_reply_utf16_units = _env_int("MAX_REPLY_UTF16_UNITS", 3500, env)
         if not 1 <= context_messages <= 50:
             raise ValueError("CONTEXT_MESSAGES 必须在 1 到 50 之间")
         if not 500 <= context_chars <= 30000:
@@ -216,8 +223,8 @@ class Config:
         if not 100 <= max_reply_utf16_units <= 4000:
             raise ValueError("MAX_REPLY_UTF16_UNITS 必须在 100 到 4000 之间")
 
-        session_path = Path(os.getenv("SESSION_PATH", "data/telegram_userbot").strip())
-        state_path = Path(os.getenv("STATE_PATH", "data/state.sqlite3").strip())
+        session_path = Path(env.get("SESSION_PATH", "data/telegram_userbot").strip())
+        state_path = Path(env.get("STATE_PATH", "data/state.sqlite3").strip())
         if not session_path.is_absolute():
             session_path = ROOT / session_path
         if not state_path.is_absolute():
@@ -226,8 +233,8 @@ class Config:
         return cls(
             api_id=api_id,
             api_hash=api_hash,
-            username_override=os.getenv("TELEGRAM_USERNAME", "").strip().lstrip("@") or None,
-            phone=os.getenv("TELEGRAM_PHONE", "").strip() or None,
+            username_override=env.get("TELEGRAM_USERNAME", "").strip().lstrip("@") or None,
+            phone=env.get("TELEGRAM_PHONE", "").strip() or None,
             allowed_chat_ids=allowed_chat_ids,
             context_messages=context_messages,
             context_chars=context_chars,
@@ -235,21 +242,21 @@ class Config:
             reply_delay_seconds=reply_delay,
             global_send_interval_seconds=global_interval,
             max_reply_utf16_units=max_reply_utf16_units,
-            test_reply_text=os.getenv("TEST_REPLY_TEXT", "").strip(),
-            openai_api_key=os.getenv("OPENAI_API_KEY", "").strip(),
-            openai_model=os.getenv("OPENAI_MODEL", "gpt-6-luna").strip(),
-            openai_base_url=os.getenv("OPENAI_BASE_URL", "").strip() or None,
-            openai_audio_api_key=os.getenv("OPENAI_AUDIO_API_KEY", "").strip(),
-            openai_audio_base_url=os.getenv("OPENAI_AUDIO_BASE_URL", "").strip() or None,
-            openai_image_api_key=os.getenv("OPENAI_IMAGE_API_KEY", "").strip(),
-            openai_image_base_url=os.getenv("OPENAI_IMAGE_BASE_URL", "").strip() or None,
-            openai_image_model=os.getenv("OPENAI_IMAGE_MODEL", "").strip(),
-            openai_image_size=os.getenv("OPENAI_IMAGE_SIZE", "").strip(),
-            image_generation_enabled=os.getenv("IMAGE_GENERATION_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"},
-            web_search_enabled=os.getenv("WEB_SEARCH_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"},
-            voice_reply_enabled=os.getenv("VOICE_REPLY_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"},
-            speech_model=os.getenv("OPENAI_SPEECH_MODEL", "gpt-4o-mini-tts").strip(),
-            speech_voice=os.getenv("VOICE_REPLY_VOICE", "alloy").strip(),
+            test_reply_text=env.get("TEST_REPLY_TEXT", "").strip(),
+            openai_api_key=env.get("OPENAI_API_KEY", "").strip(),
+            openai_model=env.get("OPENAI_MODEL", "gpt-6-luna").strip(),
+            openai_base_url=env.get("OPENAI_BASE_URL", "").strip() or None,
+            openai_audio_api_key=env.get("OPENAI_AUDIO_API_KEY", "").strip(),
+            openai_audio_base_url=env.get("OPENAI_AUDIO_BASE_URL", "").strip() or None,
+            openai_image_api_key=env.get("OPENAI_IMAGE_API_KEY", "").strip(),
+            openai_image_base_url=env.get("OPENAI_IMAGE_BASE_URL", "").strip() or None,
+            openai_image_model=env.get("OPENAI_IMAGE_MODEL", "").strip(),
+            openai_image_size=env.get("OPENAI_IMAGE_SIZE", "").strip(),
+            image_generation_enabled=env.get("IMAGE_GENERATION_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"},
+            web_search_enabled=env.get("WEB_SEARCH_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"},
+            voice_reply_enabled=env.get("VOICE_REPLY_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"},
+            speech_model=env.get("OPENAI_SPEECH_MODEL", "gpt-4o-mini-tts").strip(),
+            speech_voice=env.get("VOICE_REPLY_VOICE", "alloy").strip(),
             allowed_sender_ids=allowed_sender_ids,
             owner_user_ids=owner_user_ids,
             owner_usernames=owner_usernames,
