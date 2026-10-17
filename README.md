@@ -1,4 +1,6 @@
-# Telegram 群组 @ 监听框架
+# telegramai — Telegram 群组 AI 助手
+
+This is a tool that allows you to connect your Telegram account to an AI API key. BY CODEX
 
 这是一个 Python/Telethon 个人账号客户端框架：只监听白名单群组里对账号的明确 @ 提及，并读取最近的纯文本上下文。程序通过 OpenAI Responses API 生成回复，并使用群组白名单、每群冷却、回复延迟、全局最短发送间隔和 SQLite 去重限制处理频率。
 
