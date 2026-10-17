@@ -1531,13 +1531,17 @@ async def run(
                                                 has_reference = getattr(reference_message, "photo", None) is not None or str(getattr(document, "mime_type", "")).startswith("image/")
                                                 if has_reference and not reference_data:
                                                     raise RuntimeError("参考图片未能读取（单图需不超过 8 MB，支持 JPEG/PNG/WebP）；请重新发送，未进行图片生成。")
-                                            image_prompt, _sources = await prepare_image_prompt(
-                                                config, image_prompt, len(reply_images)
+                                            image_prompt, _sources, _used_edit_endpoint = await prepare_image_prompt(
+                                                config, image_prompt, reply_images
                                             )
                                             image_result = await generate_image(config, image_prompt, reply_images)
+                                            if _used_edit_endpoint:
+                                                image_caption += f"\n参考图：{len(reply_images)} 张已提交图片编辑接口"
                                             if _sources:
-                                                image_caption += "\n联网参考来源：\n" + "\n".join(_sources)
-                                                image_caption = fit_telegram_text(image_caption, 950)
+                                                image_caption += f"\n联网检索：已完成（{len(_sources)} 个来源）\n" + "\n".join(_sources)
+                                            elif "联网" in image_prompt or "网络搜索" in image_prompt:
+                                                image_caption += "\n联网检索：未执行"
+                                            image_caption = fit_telegram_text(image_caption, 950)
                                             reply = "绘画完成啦>wO"
                                         except FloodWaitError:
                                             raise
