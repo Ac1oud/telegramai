@@ -1447,6 +1447,11 @@ async def run(
                 elif current_has_image_keyword and replied_text:
                     image_prompt += "\n用户明确回复的参考说明：" + replied_text[:2000]
                 is_image_command = direct_mention and has_image_keyword
+                reference_required = bool(re.search(
+                    r"参考(?:这|该|此)?(?:张|个)?(?:图|图片|头像|照片)|根据(?:这|该|此)?(?:张|个)?图|照着(?:这|该|此)?(?:张|个)?图|保留(?:图中|原图)",
+                    image_prompt,
+                    re.I,
+                ))
                 LOG.info(
                     "生图匹配检查 direct_mention=%s keyword=%s keyword_source=%s 当前正文长度=%d 被回复ID=%s 被回复正文长度=%d",
                     direct_mention,
@@ -1473,6 +1478,11 @@ async def run(
                     elif is_image_command:
                         if not image_prompt:
                             reply = "用法：生图：描述你想画的内容 🎨"
+                        elif reference_required and not reply_images:
+                            reply = (
+                                "我没有读到你要求参考的图片，因此已停止生图，避免生成无关内容。"
+                                "请直接回复那张图片再发送生图指令，或把图片和指令放在同一条消息中。"
+                            )
                         elif len(image_prompt) > 4000:
                             reply = "图片描述有点长，请缩短到 4000 个字符以内再试哦。"
                         else:
