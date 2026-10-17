@@ -16,7 +16,7 @@ class ProjectModules(importlib.abc.MetaPathFinder):
         self.root = root
 
     def find_spec(self, fullname, path=None, target=None):
-        if fullname in {"main", "account_manager", "ui_effects", "project_updater", "app_runtime", "version"}:
+        if fullname in {"main", "account_manager", "ui_effects", "project_updater", "app_runtime", "version", "gui_worker"}:
             source = self.root / f"{fullname}.py"
             if source.is_file():
                 return importlib.util.spec_from_file_location(fullname, source)
@@ -24,6 +24,24 @@ class ProjectModules(importlib.abc.MetaPathFinder):
 
 
 def run() -> None:
+    # Windowed PyInstaller clears Python streams even when the parent passes
+    # pipes. Reattach only those inherited handles; never allocate a console.
+    if os.name == "nt" and getattr(sys, "frozen", False):
+        import ctypes
+        import msvcrt
+
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.GetStdHandle.argtypes = [ctypes.c_ulong]
+        kernel.GetStdHandle.restype = ctypes.c_void_p
+        for name, number, mode in (("stdin", -10, "r"), ("stdout", -11, "w"), ("stderr", -12, "w")):
+            if getattr(sys, name) is None:
+                handle = kernel.GetStdHandle(number & 0xffffffff)
+                if handle and handle != ctypes.c_void_p(-1).value:
+                    try:
+                        fd = msvcrt.open_osfhandle(handle, os.O_RDONLY if mode == "r" else os.O_WRONLY)
+                        setattr(sys, name, open(fd, mode, encoding="utf-8", errors="replace", buffering=1))
+                    except OSError:
+                        pass
     for stream in (sys.stdout, sys.stderr):
         if stream is not None and hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
@@ -35,6 +53,12 @@ def run() -> None:
 
     from version import VERSION
 
+    if len(sys.argv) > 1 and sys.argv[1] == "--worker-gui":
+        sys.argv.pop(1)
+        from gui_worker import run_worker
+
+        run_worker()
+        return
     if sys.argv[1:] == ["--version"]:
         print(VERSION)
         return

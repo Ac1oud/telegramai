@@ -24,11 +24,15 @@ resources = [
 ]
 a = Analysis([str(root / "desktop_entry.py")], pathex=[str(root)],
     binaries=[], datas=resources,
-    hiddenimports=["account_manager", "main", "ui_effects", "project_updater", "app_runtime", "version"],
+    hiddenimports=["account_manager", "main", "ui_effects", "project_updater", "app_runtime", "version", "gui_worker"],
     hookspath=[], runtime_hooks=[], excludes=[], noarchive=False,
 )
 pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, a.binaries, a.datas, [], name="TelegramAI",
-    debug=False, strip=False, upx=False, console=True, hide_console="hide-early",
+    debug=False, strip=False, upx=False, console=False,
+    icon=str(root / "assets" / "app-icon.ico"), version=metadata,
+)
+console_exe = EXE(pyz, a.scripts, a.binaries, a.datas, [], name="TelegramAI-console",
+    debug=False, strip=False, upx=False, console=True,
     icon=str(root / "assets" / "app-icon.ico"), version=metadata,
 )

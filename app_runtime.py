@@ -5,6 +5,7 @@ import sys
 
 
 FROZEN = bool(getattr(sys, "frozen", False))
+CONSOLE_MODE = not FROZEN or Path(sys.executable).stem.casefold().endswith('-console')
 ROOT = Path(sys.executable).resolve().parent if FROZEN else Path(__file__).resolve().parent
 BUNDLE_ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 SOURCE_MODE = not FROZEN or (ROOT / ".git").exists()

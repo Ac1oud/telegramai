@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 
 from project_updater import GitUpdater, UpdateError, UpdateStatus
 from ui_effects import AnimatedButton, Animator, animate_window_open, animate_window_close, mix_color
-from app_runtime import ROOT, RESOURCE_ROOT, FROZEN, SOURCE_MODE
+from app_runtime import ROOT, RESOURCE_ROOT, FROZEN, SOURCE_MODE, CONSOLE_MODE
 from version import VERSION
 
 
@@ -633,7 +633,8 @@ class AccountManager(tk.Tk):
 
     def _worker_command(self, profile: str, args: list[str], *, interactive: bool = False) -> list[str]:
         if FROZEN:
-            return [sys.executable, "--worker-console" if interactive else "--worker", "--profile", profile, *args]
+            mode = ("--worker-console" if CONSOLE_MODE else "--worker-gui") if interactive else "--worker"
+            return [sys.executable, mode, "--profile", profile, *args]
         return [self.python, str(ROOT / "main.py"), "--profile", profile, *args]
 
     def _launch(self, profile: str, action: str, args: list[str]) -> None:
@@ -643,6 +644,8 @@ class AccountManager(tk.Tk):
         python_path = os.environ.copy()
         python_path["PYTHONPATH"] = str(ROOT / ".deps")
         flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0x10) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200)
+        if FROZEN and not CONSOLE_MODE:
+            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
         process = subprocess.Popen(
             self._worker_command(profile, args, interactive=True),
             cwd=ROOT,
@@ -650,7 +653,8 @@ class AccountManager(tk.Tk):
             creationflags=flags,
         )
         self.child_processes.append((profile, action, process))
-        self.status.set(f"已为 {profile} 打开“{action}”终端；按提示在该终端输入验证码或扫描二维码。")
+        surface = "操作窗口" if FROZEN and not CONSOLE_MODE else "终端"
+        self.status.set(f"已为 {profile} 打开“{action}”{surface}；请按提示完成操作。")
 
     def login_and_list(self) -> None:
         profile = self.selected_profile()

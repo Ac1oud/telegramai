@@ -45,12 +45,13 @@ class WindowMotionTests(unittest.TestCase):
         observed = []
 
         def check_and_close():
+            root.after_cancel(timeout)
             observed.append((root.winfo_width(), root.winfo_height(), root.minsize(), root.attributes("-alpha")))
             animate_window_close(root, duration_ms=30)
             animate_window_close(root, duration_ms=30)
 
         root.after(130, check_and_close)
-        root.after(1500, root.destroy)
+        timeout = root.after(1500, root.destroy)
         root.mainloop()
         self.assertFalse(errors)
         self.assertEqual(observed, [(360, 240, (320, 200), 1.0)])

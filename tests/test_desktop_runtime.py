@@ -50,11 +50,16 @@ class DesktopRuntimeTests(unittest.TestCase):
         manager = importlib.util.module_from_spec(spec)
         with patch.dict(sys.modules, {"main": SimpleNamespace(create_profile=lambda: None)}):
             spec.loader.exec_module(manager)
-        with patch.object(manager, "FROZEN", True):
+        with patch.object(manager, "FROZEN", True), patch.object(manager, "CONSOLE_MODE", True):
             command = manager.AccountManager._worker_command(None, "example", ["--list-chats-json"])
             self.assertEqual(command[1:], ["--worker", "--profile", "example", "--list-chats-json"])
             command = manager.AccountManager._worker_command(None, "example", [], interactive=True)
             self.assertEqual(command[1], "--worker-console")
+        with patch.object(manager, "FROZEN", True), patch.object(manager, "CONSOLE_MODE", False):
+            command = manager.AccountManager._worker_command(None, "example", [], interactive=True)
+            self.assertEqual(command[1], "--worker-gui")
+            command = manager.AccountManager._worker_command(None, "example", ["--list-chats-json"])
+            self.assertEqual(command[1], "--worker")
 
 
 if __name__ == "__main__":

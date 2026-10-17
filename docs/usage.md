@@ -55,13 +55,15 @@ python main.py
 
 ### Windows 单文件 EXE
 
+提供两个独立版本：`TelegramAI.exe`（无终端版）与 `TelegramAI-console.exe`（命令行版）。无终端版的监听、日志、验证码和两步验证均在图形操作窗口内处理，不启动 CMD / BAT 终端；命令行版保留控制台输出和输入，方便排错。两个 EXE 都能独立运行，共用同目录的本地配置。
+
 从 [GitHub Releases](https://github.com/Ac1oud/telegramai/releases) 下载 `TelegramAI.exe`，放入可写文件夹后双击即可运行，无需另外安装 Python。首次运行只会在 EXE 旁创建空白配置模板；请填写自己的 Telegram API 信息，再创建账号并登录。账号配置、session 和数据库均保存在 EXE 所在目录，不会写入临时解压目录，也不会包含在发布包中。
 
 在现有 Git 项目中使用时，将 EXE 放在 `open-account-manager.bat` 旁边，便可继续使用已有的本地配置。EXE 优先加载该 Git 项目中的程序源码，因此“同步更新”后的代码会在重启后生效；该模式仍需要 Git。EXE 内置的第三方依赖不会随源码更新，依赖变更时请下载新版 EXE。
 
 单独使用 EXE（旁边没有 `.git`）时，更新按钮会打开 Releases。先退出工作台与监听进程，下载新版并替换原 EXE，保留旁边的 `.env`、`profiles/` 和 `data/`。BAT 与 Python 源码继续保留，可按原来的方式启动。
 
-开发者可在 Windows 安装 Python 3.12 后运行 `powershell -ExecutionPolicy Bypass -File .\build-windows.ps1`，生成的单文件位于 `dist/TelegramAI.exe`。打包只包含程序、运行依赖、图标与空白 `.env.example`，通过明确资源清单排除所有本地账号和密钥。
+开发者可在 Windows 安装 Python 3.12 后运行 `powershell -ExecutionPolicy Bypass -File .\build-windows.ps1`，生成的两个单文件位于 `dist/TelegramAI.exe` 和 `dist/TelegramAI-console.exe`。打包只包含程序、运行依赖、图标与空白 `.env.example`，通过明确资源清单排除所有本地账号和密钥。
 
 ### 在另一台 Windows 电脑安装
 

@@ -6,6 +6,7 @@
 build/
 dist/
 TelegramAI.exe
+TelegramAI-console.exe
 .deps/
 .idea/
 __pycache__/

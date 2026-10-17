@@ -166,6 +166,8 @@ def animate_window_open(
         window.update_idletasks()
         position(0)
         window.deiconify()
+        # Mapping can defer child layout on Windows; settle it before moving.
+        window.update_idletasks()
         animator.animate("window", duration_ms, position, finish, easing=spring_out)
 
     # Leave the first idle pass before measuring: Tk can defer geometry changes

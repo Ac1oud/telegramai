@@ -26,6 +26,8 @@
 2. 双击启动；首次运行会在旁边生成 `.env` 模板。填写自己的 Telegram API ID / Hash，再配置模型服务。
 3. 新建账号并登录，设置群白名单，然后启动监听。
 
+`TelegramAI.exe` 为无终端版，运行与登录使用图形操作窗口，不打开 CMD。`TelegramAI-console.exe` 为命令行版，保留终端输出及交互，便于排错。两者各自包含完整依赖，可单独使用。
+
 EXE 已包含 Python 和运行依赖。已有本地项目可将 EXE 放在 `open-account-manager.bat` 旁边，继续使用现有账号配置；BAT 启动方式仍然保留。
 
 ### Python 源码
