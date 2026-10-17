@@ -7,6 +7,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from version import VERSION
+
 
 class UpdateError(RuntimeError):
     """可以直接向用户显示的更新错误。"""
@@ -22,7 +24,7 @@ class UpdateStatus:
     dependencies_changed: bool = False
 
     def message(self) -> str:
-        version = f"当前版本：{self.current[:8]}"
+        version = f"当前版本：{VERSION}（提交 {self.current[:8]}）"
         if self.updated:
             text = f"已更新到 {self.target[:8]}。请关闭并重新打开账号管理器，然后启动监听。"
             if self.dependencies_changed:

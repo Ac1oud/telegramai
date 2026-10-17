@@ -10,18 +10,21 @@ import signal
 import subprocess
 import sys
 import threading
+import webbrowser
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 from urllib.parse import urlparse
 
 from project_updater import GitUpdater, UpdateError, UpdateStatus
-from ui_effects import AnimatedButton, Animator, animate_window_open, mix_color
+from ui_effects import AnimatedButton, Animator, animate_window_open, animate_window_close, mix_color
+from app_runtime import ROOT, RESOURCE_ROOT, FROZEN, SOURCE_MODE
+from version import VERSION
 
 
-ROOT = Path(__file__).resolve().parent
 PROFILE_DIR = ROOT / "profiles"
-sys.path.insert(0, str(ROOT / ".deps"))
+if not FROZEN:
+    sys.path.insert(0, str(ROOT / ".deps"))
 from main import create_profile  # noqa: E402
 
 
@@ -39,7 +42,7 @@ class AccountManager(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         animate_window_open(self)
-        self.title("Telegram AI · 账号工作台")
+        self.title(f"Telegram AI · {VERSION}")
         self.geometry("820x730")
         self.minsize(760, 720)
         self.python = python_console_executable()
@@ -131,23 +134,24 @@ class AccountManager(tk.Tk):
         """窗口、任务栏和页面共用图标；资源缺失时仍能启动。"""
         self.header_icon: tk.PhotoImage | None = None
         try:
-            self.app_icon = tk.PhotoImage(file=str(ROOT / "assets" / "app-icon-64.png"))
+            self.app_icon = tk.PhotoImage(file=str(RESOURCE_ROOT / "assets" / "app-icon-64.png"))
             self.header_icon = self.app_icon
             self.iconphoto(True, self.app_icon)
             if os.name == "nt":
-                self.iconbitmap(default=str(ROOT / "assets" / "app-icon.ico"))
-                self.iconbitmap(str(ROOT / "assets" / "app-icon.ico"))
+                self.iconbitmap(default=str(RESOURCE_ROOT / "assets" / "app-icon.ico"))
+                self.iconbitmap(str(RESOURCE_ROOT / "assets" / "app-icon.ico"))
         except (tk.TclError, OSError):
             pass
 
     def _new_dialog(self, parent: tk.Misc | None = None) -> tk.Toplevel:
         dialog = tk.Toplevel(parent or self)
         animate_window_open(dialog)
+        dialog.protocol("WM_DELETE_WINDOW", lambda: animate_window_close(dialog))
         if hasattr(self, "app_icon"):
             try:
                 dialog.iconphoto(False, self.app_icon)
                 if os.name == "nt":
-                    dialog.iconbitmap(str(ROOT / "assets" / "app-icon.ico"))
+                    dialog.iconbitmap(str(RESOURCE_ROOT / "assets" / "app-icon.ico"))
             except tk.TclError:
                 pass
         return dialog
@@ -177,11 +181,11 @@ class AccountManager(tk.Tk):
             title_x + 1, 72, anchor="w", text="管理登录会话、监听范围和触发权限",
             fill=self.colors["muted"], font=("Microsoft YaHei UI", 9),
         )
-        badge_w = 76
+        badge_w = 112
         badge_x = width - badge_w - 18
         canvas.create_rectangle(badge_x, 27, badge_x + badge_w, 48, fill="#F7F2FA", outline="")
         canvas.create_text(
-            badge_x + badge_w / 2, 37, text="多账号管理",
+            badge_x + badge_w / 2, 37, text=VERSION,
             fill="#87639F", font=("Microsoft YaHei UI", 8, "bold"),
         )
 
@@ -408,12 +412,12 @@ class AccountManager(tk.Tk):
                 messagebox.showerror("保存生图设置失败", str(exc), parent=dialog)
                 return
             self.status.set("生图设置已保存；重启监听后生效。")
-            dialog.destroy()
+            animate_window_close(dialog)
 
         buttons = ttk.Frame(body)
         buttons.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(16, 0))
         AnimatedButton(buttons, text="保存设置", style="Primary.TButton", command=save).pack(side="right")
-        AnimatedButton(buttons, text="取消", command=dialog.destroy).pack(side="right", padx=(0, 8))
+        AnimatedButton(buttons, text="取消", command=lambda: animate_window_close(dialog)).pack(side="right", padx=(0, 8))
 
     def manage_model_settings(self) -> None:
         """编辑共享 .env 中的聊天模型名称、API Key 和 API 地址。"""
@@ -492,12 +496,12 @@ class AccountManager(tk.Tk):
                 messagebox.showerror("保存语言模型设置失败", str(exc), parent=dialog)
                 return
             self.status.set("语言模型设置已保存；重启监听后生效。")
-            dialog.destroy()
+            animate_window_close(dialog)
 
         buttons = ttk.Frame(body)
         buttons.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(14, 0))
         AnimatedButton(buttons, text="保存设置", style="Primary.TButton", command=save).pack(side="right")
-        AnimatedButton(buttons, text="取消", command=dialog.destroy).pack(side="right", padx=(0, 8))
+        AnimatedButton(buttons, text="取消", command=lambda: animate_window_close(dialog)).pack(side="right", padx=(0, 8))
 
     def check_project_updates(self) -> None:
         """在后台检查 GitHub 更新，避免网络等待阻塞界面。"""
@@ -508,6 +512,13 @@ class AccountManager(tk.Tk):
 
     def _start_project_update(self, *, sync: bool) -> None:
         if self.update_busy:
+            return
+        if FROZEN and not SOURCE_MODE:
+            messagebox.showinfo(
+                "下载 EXE 更新", f"当前版本：{VERSION}\n\n将打开 GitHub Releases。下载新版 TelegramAI.exe，关闭程序后替换原文件；旁边的账号配置和会话继续保留。",
+                parent=self,
+            )
+            webbrowser.open("https://github.com/Ac1oud/telegramai/releases")
             return
         if sync and any(process.poll() is None for _profile, _action, process in self.child_processes):
             messagebox.showwarning("请先停止监听", "同步前请先停止所有监听或登录终端（包括从其他窗口启动的进程）。")
@@ -617,6 +628,11 @@ class AccountManager(tk.Tk):
             f"当前选择：{profile}    {state}    白名单群 {chat_count} 个    {sender_status}    主人 {owner_count} ID / {owner_names_count} 用户名"
         )
 
+    def _worker_command(self, profile: str, args: list[str], *, interactive: bool = False) -> list[str]:
+        if FROZEN:
+            return [sys.executable, "--worker-console" if interactive else "--worker", "--profile", profile, *args]
+        return [self.python, str(ROOT / "main.py"), "--profile", profile, *args]
+
     def _launch(self, profile: str, action: str, args: list[str]) -> None:
         if self.update_busy:
             messagebox.showinfo("更新进行中", "请等待更新操作结束后，再启动登录或监听进程。")
@@ -625,7 +641,7 @@ class AccountManager(tk.Tk):
         python_path["PYTHONPATH"] = str(ROOT / ".deps")
         flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0x10) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200)
         process = subprocess.Popen(
-            [self.python, str(ROOT / "main.py"), "--profile", profile, *args],
+            self._worker_command(profile, args, interactive=True),
             cwd=ROOT,
             env=python_path,
             creationflags=flags,
@@ -681,7 +697,7 @@ class AccountManager(tk.Tk):
                     proc.kill()
                 except OSError:
                     pass
-        self.destroy()
+        animate_window_close(self)
 
     def new_profile(self) -> None:
         source = self.selected_profile()
@@ -921,7 +937,7 @@ class AccountManager(tk.Tk):
                 text = text.rstrip() + "\n" + line + "\n"
             profile_file.write_text(text, encoding="utf-8")
             self.status.set(f"已保存 {profile} 的群白名单，共 {len(chat_ids)} 个群；重启监听后生效。")
-            dialog.destroy()
+            animate_window_close(dialog)
 
         fetch_status = tk.StringVar(value="可从当前账号 session 获取群名称和 ID。")
         ttk.Label(dialog, textvariable=fetch_status, wraplength=440).pack(anchor="w", padx=12, pady=(0, 8))
@@ -957,7 +973,7 @@ class AccountManager(tk.Tk):
                     if group_id not in chat_ids:
                         chat_ids.append(group_id)
                 refresh_ids()
-                picker.destroy()
+                animate_window_close(picker)
                 fetch_status.set(f"已选择 {len(selected)} 个群；点“保存”后写入当前账号配置。")
 
             picker_controls = ttk.Frame(picker, padding=(12, 0, 12, 12))
@@ -986,7 +1002,7 @@ class AccountManager(tk.Tk):
                 env["PYTHONIOENCODING"] = "utf-8"
                 try:
                     result = subprocess.run(
-                        [self.python, str(ROOT / "main.py"), "--profile", profile, "--list-chats-json"],
+                        self._worker_command(profile, ["--list-chats-json"]),
                         cwd=ROOT,
                         env=env,
                         capture_output=True,
@@ -1230,7 +1246,7 @@ class AccountManager(tk.Tk):
                     )
                     populate_usernames()
                 fetch_status.set(f"已将所选联系人加入“{target_name}”；点保存后写入配置。")
-                picker.destroy()
+                animate_window_close(picker)
 
             buttons = ttk.Frame(picker, padding=(12, 0, 12, 12))
             buttons.pack(fill="x")
@@ -1255,7 +1271,7 @@ class AccountManager(tk.Tk):
                 env["PYTHONIOENCODING"] = "utf-8"
                 try:
                     result = subprocess.run(
-                        [self.python, str(ROOT / "main.py"), "--profile", profile, "--list-contacts-json"],
+                        self._worker_command(profile, ["--list-contacts-json"]),
                         cwd=ROOT, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",
                         timeout=90, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
                     )
@@ -1306,7 +1322,7 @@ class AccountManager(tk.Tk):
             self.status.set(
                 f"已保存 {profile} 用户名单：可触发 {len(sender_ids)} 人，主人 {len(owner_ids)} 个 ID / {len(owner_usernames)} 个用户名；重启监听后生效。"
             )
-            dialog.destroy()
+            animate_window_close(dialog)
 
         AnimatedButton(controls, text="保存两份名单", style="Primary.TButton", command=save_user_lists).pack(side="right")
 
@@ -1315,7 +1331,7 @@ class AccountManager(tk.Tk):
         self.after(1200, self._refresh_process_status)
 
 
-if __name__ == "__main__":
+def run_desktop() -> None:
     if os.name == "nt":
         # 将本程序的任务栏图标与通用 Python 进程分组区分。
         import ctypes
@@ -1325,3 +1341,7 @@ if __name__ == "__main__":
         except (AttributeError, OSError):
             pass
     AccountManager().mainloop()
+
+
+if __name__ == "__main__":
+    run_desktop()

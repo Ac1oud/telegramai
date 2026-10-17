@@ -58,6 +58,7 @@ class Animator:
         duration_ms: int,
         update: Callable[[float], None],
         complete: Callable[[], None] | None = None,
+        easing: Callable[[float], float] | None = None,
     ) -> None:
         self.cancel(key)
         if not self._exists():
@@ -79,7 +80,7 @@ class Animator:
                 else min(1.0, (monotonic() - started) * 1000 / duration_ms)
             )
             try:
-                update(1.0 - (1.0 - progress) ** 3)
+                update(easing(progress) if easing else 1.0 - (1.0 - progress) ** 3)
             except tk.TclError:
                 self.cancel(key)
                 if self._exists():
@@ -112,54 +113,88 @@ def mix_color(widget: tk.Misc, start: str, end: str, progress: float) -> str:
     )
 
 
+def spring_out(progress: float) -> float:
+    """A restrained overshoot that settles exactly on the target."""
+    t = progress - 1.0
+    return 1.0 + 2.6 * t ** 3 + 1.6 * t ** 2
+
+
+def _window_rect(window: tk.Tk | tk.Toplevel) -> tuple[int, int, int, int]:
+    return window.winfo_width(), window.winfo_height(), window.winfo_x(), window.winfo_y()
+
+
 def animate_window_open(
-    window: tk.Tk | tk.Toplevel, duration_ms: int = 180,
-) -> Animator | None:
-    """Fade in when the window first maps, without a fully opaque first frame.
+    window: tk.Tk | tk.Toplevel, duration_ms: int = 260,
+) -> Animator:
+    """Pop into place using size and position, with full opacity throughout.
 
-    Call immediately after creating/configuring a Tk or Toplevel, before any
-    update() or mainloop(). Platforms without window alpha simply show normally.
+    Schedule after constructing the window; desired geometry and contents can
+    still be set before the event loop. A small overshoot supplies the spring.
     """
-    previous = getattr(window, "_window_open_animator", None)
-    if previous is not None:
-        previous.cancel()
-    previous_binding = getattr(window, "_window_open_binding", None)
-    if previous_binding:
-        window.unbind("<Map>", previous_binding)
-        window._window_open_binding = None
-    try:
-        window.attributes("-alpha", 0.0)
-    except tk.TclError:
-        return None
+    window.withdraw()
     animator = Animator(window)
-    window._window_open_animator = animator
+    window._window_motion = animator
+    window._motion_closing = False
 
-    def show(event: tk.Event | None = None) -> None:
-        if event is not None and event.widget is not window:
+    def prepare() -> None:
+        if not animator._exists() or window._motion_closing:
             return
-        binding = getattr(window, "_window_open_binding", None)
-        if binding:
-            window.unbind("<Map>", binding)
-            window._window_open_binding = None
+        window.update_idletasks()
+        width, height, _, _ = _window_rect(window)
+        width = max(width, window.winfo_reqwidth())
+        height = max(height, window.winfo_reqheight())
+        minimum = window.minsize()
+        width, height = max(width, minimum[0]), max(height, minimum[1])
+        parent = window.master.winfo_toplevel() if window.master else None
+        if parent is not None and parent.winfo_ismapped():
+            x = parent.winfo_rootx() + (parent.winfo_width() - width) // 2
+            y = parent.winfo_rooty() + (parent.winfo_height() - height) // 2
+        else:
+            x = (window.winfo_screenwidth() - width) // 2
+            y = (window.winfo_screenheight() - height) // 2 - 24
+        x, y = max(0, x), max(0, y)
+        window.minsize(1, 1)
 
-        def alpha(progress: float) -> None:
-            try:
-                window.attributes("-alpha", progress)
-            except tk.TclError:
-                animator.cancel("window-open")
-                # A compositor can lose alpha support after initial setup.
-                try:
-                    window.attributes("-alpha", 1.0)
-                except tk.TclError:
-                    pass
+        def position(progress: float) -> None:
+            scale = 0.92 + 0.08 * progress
+            w, h = round(width * scale), round(height * scale)
+            left = x + (width - w) // 2
+            top = y + (height - h) // 2 + round(18 * (1 - progress))
+            window.geometry(f"{w}x{h}+{left}+{top}")
 
-        animator.animate("window-open", duration_ms, alpha)
+        def finish() -> None:
+            window.geometry(f"{width}x{height}+{x}+{y}")
+            window.minsize(*minimum)
 
-    if window.winfo_ismapped():
-        show()
-    else:
-        window._window_open_binding = window.bind("<Map>", show, add="+")
+        position(0)
+        window.deiconify()
+        animator.animate("window", duration_ms, position, finish, easing=spring_out)
+
+    # Leave the first idle pass before measuring: Tk can defer geometry changes
+    # made after this helper until that pass has finished (notably on Windows).
+    window.after_idle(lambda: window.after(0, prepare))
     return animator
+
+
+def animate_window_close(window: tk.Tk | tk.Toplevel, duration_ms: int = 150) -> None:
+    """Shrink slightly toward the centre and slide down before closing."""
+    if getattr(window, "_motion_closing", False):
+        return
+    window._motion_closing = True
+    animator = getattr(window, "_window_motion", None) or Animator(window)
+    animator.cancel()
+    if not window.winfo_ismapped():
+        window.destroy()
+        return
+    width, height, x, y = _window_rect(window)
+    window.minsize(1, 1)
+
+    def position(progress: float) -> None:
+        scale = 1.0 - 0.055 * progress
+        w, h = round(width * scale), round(height * scale)
+        window.geometry(f"{w}x{h}+{x + (width-w)//2}+{y + (height-h)//2 + round(14*progress)}")
+
+    animator.animate("window", duration_ms, position, window.destroy, easing=lambda p: p * p)
 
 
 _button_ids = count(1)

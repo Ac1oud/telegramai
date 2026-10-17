@@ -32,7 +32,7 @@ from telethon.errors import (
 )
 
 
-ROOT = Path(__file__).resolve().parent
+from app_runtime import ROOT
 PROFILE_DIR = ROOT / "profiles"
 LOG = logging.getLogger("group_assistant")
 

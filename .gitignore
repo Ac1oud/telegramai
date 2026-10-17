@@ -2,6 +2,10 @@
 .env.*
 !.env.example
 .venv/
+.build-venv/
+build/
+dist/
+TelegramAI.exe
 .deps/
 .idea/
 __pycache__/
