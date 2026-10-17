@@ -126,7 +126,7 @@ def _window_rect(window: tk.Tk | tk.Toplevel) -> tuple[int, int, int, int]:
 def animate_window_open(
     window: tk.Tk | tk.Toplevel, duration_ms: int = 260,
 ) -> Animator:
-    """Pop into place using size and position, with full opacity throughout.
+    """Slide into place with a small spring, at full size and opacity.
 
     Schedule after constructing the window; desired geometry and contents can
     still be set before the event loop. A small overshoot supplies the spring.
@@ -153,19 +153,17 @@ def animate_window_open(
             x = (window.winfo_screenwidth() - width) // 2
             y = (window.winfo_screenheight() - height) // 2 - 24
         x, y = max(0, x), max(0, y)
-        window.minsize(1, 1)
-
         def position(progress: float) -> None:
-            scale = 0.92 + 0.08 * progress
-            w, h = round(width * scale), round(height * scale)
-            left = x + (width - w) // 2
-            top = y + (height - h) // 2 + round(18 * (1 - progress))
-            window.geometry(f"{w}x{h}+{left}+{top}")
+            # Resizing native Tk controls every frame forces layout and repaint
+            # (including Canvas gradients). Move the composed window instead.
+            top = y + round(18 * (1 - progress))
+            window.geometry(f"+{x}+{top}")
 
         def finish() -> None:
             window.geometry(f"{width}x{height}+{x}+{y}")
-            window.minsize(*minimum)
 
+        window.geometry(f"{width}x{height}+{x}+{y + 18}")
+        window.update_idletasks()
         position(0)
         window.deiconify()
         animator.animate("window", duration_ms, position, finish, easing=spring_out)
@@ -177,7 +175,7 @@ def animate_window_open(
 
 
 def animate_window_close(window: tk.Tk | tk.Toplevel, duration_ms: int = 150) -> None:
-    """Shrink slightly toward the centre and slide down before closing."""
+    """Slide down before closing, keeping native controls at a stable size."""
     if getattr(window, "_motion_closing", False):
         return
     window._motion_closing = True
@@ -186,13 +184,10 @@ def animate_window_close(window: tk.Tk | tk.Toplevel, duration_ms: int = 150) ->
     if not window.winfo_ismapped():
         window.destroy()
         return
-    width, height, x, y = _window_rect(window)
-    window.minsize(1, 1)
+    _, _, x, y = _window_rect(window)
 
     def position(progress: float) -> None:
-        scale = 1.0 - 0.055 * progress
-        w, h = round(width * scale), round(height * scale)
-        window.geometry(f"{w}x{h}+{x + (width-w)//2}+{y + (height-h)//2 + round(14*progress)}")
+        window.geometry(f"+{x}+{y + round(14 * progress)}")
 
     animator.animate("window", duration_ms, position, window.destroy, easing=lambda p: p * p)
 

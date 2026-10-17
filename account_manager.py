@@ -158,9 +158,12 @@ class AccountManager(tk.Tk):
 
     def _draw_header(self, canvas: tk.Canvas) -> None:
         """绘制莫奈风的浅粉、薰衣草紫与淡蓝渐变。"""
-        canvas.delete("all")
         width = max(canvas.winfo_width(), 400)
         height = max(canvas.winfo_height(), 106)
+        if getattr(canvas, "_painted_size", None) == (width, height):
+            return
+        canvas._painted_size = (width, height)
+        canvas.delete("all")
         stops = [(0.0, (248, 222, 231)), (0.52, (235, 222, 244)), (1.0, (220, 231, 246))]
         for x in range(0, width, 3):
             position = x / max(1, width - 1)
