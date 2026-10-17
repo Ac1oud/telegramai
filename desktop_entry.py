@@ -16,7 +16,7 @@ class ProjectModules(importlib.abc.MetaPathFinder):
         self.root = root
 
     def find_spec(self, fullname, path=None, target=None):
-        if fullname in {"main", "account_manager", "ui_effects", "project_updater", "app_runtime", "version", "gui_worker"}:
+        if fullname in {"main", "account_manager", "ui_effects", "project_updater", "app_runtime", "version", "gui_worker", "image_references"}:
             source = self.root / f"{fullname}.py"
             if source.is_file():
                 return importlib.util.spec_from_file_location(fullname, source)

@@ -340,8 +340,8 @@ class AccountManager(tk.Tk):
 
         dialog = self._new_dialog()
         dialog.title("图片生成设置")
-        dialog.geometry("620x360")
-        dialog.minsize(560, 330)
+        dialog.geometry("620x440")
+        dialog.minsize(560, 420)
         dialog.transient(self)
         dialog.grab_set()
         body = ttk.Frame(dialog, padding=16)
@@ -378,6 +378,14 @@ class AccountManager(tk.Tk):
         ttk.Entry(body, textvariable=model_var, width=52).grid(row=6, column=1, sticky="ew", pady=5)
         body.columnconfigure(1, weight=1)
 
+        search_enabled = tk.BooleanVar(value=str(values.get("WEB_SEARCH_ENABLED", "true")).strip().lower() in {"1", "true", "yes", "on"})
+        ttk.Checkbutton(body, text="允许联网参考（与聊天联网共用开关）", variable=search_enabled).grid(
+            row=7, column=0, columnspan=2, sticky="w", pady=(8, 4)
+        )
+        ttk.Label(body, text="联网需聊天服务支持搜索；参考图需图片服务支持图片编辑。", wraplength=560).grid(
+            row=8, column=0, columnspan=2, sticky="w"
+        )
+
         def save() -> None:
             base_url = base_var.get().strip()
             parsed_url = urlparse(base_url) if base_url else None
@@ -392,6 +400,7 @@ class AccountManager(tk.Tk):
                 current_text = env_file.read_text(encoding="utf-8-sig") if env_file.exists() else ""
                 updates = {
                     "IMAGE_GENERATION_ENABLED": "true" if enabled.get() else "false",
+                    "WEB_SEARCH_ENABLED": "true" if search_enabled.get() else "false",
                     "OPENAI_IMAGE_BASE_URL": base_url,
                     "OPENAI_IMAGE_MODEL": model,
                 }
@@ -418,7 +427,7 @@ class AccountManager(tk.Tk):
             animate_window_close(dialog)
 
         buttons = ttk.Frame(body)
-        buttons.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(16, 0))
+        buttons.grid(row=9, column=0, columnspan=2, sticky="ew", pady=(16, 0))
         AnimatedButton(buttons, text="保存设置", style="Primary.TButton", command=save).pack(side="right")
         AnimatedButton(buttons, text="取消", command=lambda: animate_window_close(dialog)).pack(side="right", padx=(0, 8))
 

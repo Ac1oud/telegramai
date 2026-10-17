@@ -33,6 +33,7 @@ from telethon.errors import (
 
 
 from app_runtime import ROOT
+from image_references import prepare_image_prompt
 PROFILE_DIR = ROOT / "profiles"
 LOG = logging.getLogger("group_assistant")
 
@@ -676,7 +677,7 @@ async def generate_reply(
                 f"{context}\n"
             )
     if reply_images:
-        input_text += "\n附图说明：下方图片来自当前消息所回复的原消息；仅在它与当前问题相关时查看并描述，不要猜测看不清的内容。\n"
+        input_text += "\n附图说明：下方图片来自当前消息或其明确回复的原消息；仅在它与当前问题相关时查看并描述，不要猜测看不清的内容。\n"
     search_input = "\n".join(part for part in (trigger_text, reply_context, context) if part)
     wants_search = config.web_search_enabled and bool(
         re.search(r"https?://|www\.|上网|联网|网页|网址|链接|搜索|查一下|查查|查找|最新|今天|目前", search_input, re.I)
@@ -846,7 +847,7 @@ def parse_image_command(text: str) -> tuple[bool, str]:
     return True, prompt
 
 
-async def generate_image(config: Config, prompt: str) -> tuple[bytes, str]:
+async def generate_image(config: Config, prompt: str, reference_images: list[tuple[str, str]] | None = None) -> tuple[bytes, str]:
     """通过单独配置的 OpenAI-compatible Images API 生成一张图片。"""
     if not config.openai_image_model:
         raise RuntimeError("尚未配置 OPENAI_IMAGE_MODEL；请在 .env 中填写图片模型名称")
@@ -876,7 +877,21 @@ async def generate_image(config: Config, prompt: str) -> tuple[bytes, str]:
         }
         if config.openai_image_size:
             params["size"] = config.openai_image_size
-        response = await client.images.generate(**params)
+        if reference_images:
+            files = []
+            for mime_type, data_url in reference_images[:4]:
+                if mime_type not in {"image/png", "image/jpeg", "image/webp"}:
+                    raise RuntimeError("参考生图支持 PNG、JPEG、WebP；请把 GIF 转为静态图片后重发。")
+                raw = base64.b64decode(data_url.split(",", 1)[-1])
+                suffix = ".png" if mime_type == "image/png" else ".webp" if mime_type == "image/webp" else ".jpg"
+                source = io.BytesIO(raw)
+                source.name = "reference" + suffix
+                files.append(source)
+            if config.openai_image_model in {"gpt-image-1", "gpt-image-1.5"}:
+                params["input_fidelity"] = "high"
+            response = await client.images.edit(image=files, **params)
+        else:
+            response = await client.images.generate(**params)
         image = response.data[0] if response.data else None
         if image is None:
             raise RuntimeError("图片 API 返回结果为空")
@@ -927,7 +942,7 @@ async def generate_image(config: Config, prompt: str) -> tuple[bytes, str]:
         response = getattr(exc, "response", None)
         request = getattr(response, "request", None)
         request_url = getattr(request, "url", None)
-        endpoint = getattr(request_url, "path", None) or "/images/generations"
+        endpoint = getattr(request_url, "path", None) or ("/images/edits" if reference_images else "/images/generations")
         if status_code == 404:
             detail = (
                 f"图片 API 返回 HTTP 404（endpoint={endpoint}, model={config.openai_image_model}）。"
@@ -943,6 +958,8 @@ async def generate_image(config: Config, prompt: str) -> tuple[bytes, str]:
                 detail += f", code={api_code}"
             detail += "）"
         LOG.error("%s", detail)
+        if reference_images:
+            detail += " 参考图已保留，本次不会改为纯文字重试。请确认图片服务与所选模型支持 /images/edits。"
         raise RuntimeError(detail) from None
     finally:
         await client.close()
@@ -1101,6 +1118,7 @@ async def deliver_image_to_backup_group(
     allowed_chat_ids: frozenset[int],
     source_chat_id: int,
     console_lock: asyncio.Lock,
+    image_caption: str = "绘画完成啦>wO",
 ) -> tuple[int, str, Any] | None:
     """经终端逐次确认后，发到首个允许接收的白名单群；不会群发。"""
     excluded_chat_ids: set[int] = set()
@@ -1115,7 +1133,7 @@ async def deliver_image_to_backup_group(
         image_file.name = f"generated.{image_extension}"
         try:
             sent_message = await client.send_file(
-                chat_id, image_file, caption="绘画完成啦>wO", force_document=False
+                chat_id, image_file, caption=image_caption, force_document=False, parse_mode=None
             )
             return chat_id, title, sent_message
         except FloodWaitError:
@@ -1125,7 +1143,7 @@ async def deliver_image_to_backup_group(
             image_file.seek(0)
             try:
                 sent_message = await client.send_file(
-                    chat_id, image_file, caption="绘画完成啦>wO", force_document=True
+                    chat_id, image_file, caption=image_caption, force_document=True, parse_mode=None
                 )
                 return chat_id, title, sent_message
             except FloodWaitError:
@@ -1381,6 +1399,7 @@ async def run(
                     )
                 reply_context = format_context([reply_to_message], min(config.context_chars, 2000)) if reply_to_message else ""
                 reply_images: list[tuple[str, str]] = []
+                image_data = None
                 if reply_to_message:
                     image_data = await get_reply_image_data(client, reply_to_message)
                     if image_data:
@@ -1388,12 +1407,16 @@ async def run(
                         reply_context = (reply_context + "\n[被回复的原消息附带图片，图片已一并提供给模型。]").strip()
                     elif getattr(reply_to_message, "media", None) is not None and not reply_context:
                         reply_context = "[被回复的原消息包含非文字附件，当前无法读取其内容。]"
+                current_image = await get_reply_image_data(client, event.message)
+                if current_image:
+                    reply_images.append(current_image)
                 if not context and not trigger_text and not reply_context and not reply_images:
                     return
 
                 # 模型生成期间显示 Telegram 标准“正在输入”状态；回复仍一次性发送。
                 voice_bytes: bytes | None = None
                 image_result: tuple[bytes, str] | None = None
+                image_caption = "绘画完成啦>wO"
                 image_delivery_mode: str | None = None
                 progress_message: Any | None = None
                 progress_send_failed = False
@@ -1407,16 +1430,22 @@ async def run(
                 reply_has_image_keyword = False
                 # 用户可能回复一条“生成图片……”的消息并在回复中 @ 账号；
                 # 这种情况下指令在被回复原文里，而不在当前消息正文里。
-                if not has_image_keyword and reply_to_message is not None:
+                if reply_to_message is not None:
                     replied_text = (
                         getattr(reply_to_message, "message", None)
                         or getattr(reply_to_message, "raw_text", None)
                         or ""
                     )
-                    reply_has_image_keyword, image_prompt = parse_image_command(replied_text)
-                    has_image_keyword = reply_has_image_keyword
-                    if reply_has_image_keyword:
+                    reply_has_image_keyword, reply_image_prompt = parse_image_command(replied_text)
+                    if not has_image_keyword and reply_has_image_keyword:
+                        image_prompt = reply_image_prompt
+                    has_image_keyword = has_image_keyword or reply_has_image_keyword
+                    if reply_has_image_keyword and not current_has_image_keyword:
                         image_keyword_source = "被回复原文"
+                if reply_has_image_keyword and not current_has_image_keyword:
+                    image_prompt += "\n当前追加要求：" + trigger_text
+                elif current_has_image_keyword and replied_text:
+                    image_prompt += "\n用户明确回复的参考说明：" + replied_text[:2000]
                 is_image_command = direct_mention and has_image_keyword
                 LOG.info(
                     "生图匹配检查 direct_mention=%s keyword=%s keyword_source=%s 当前正文长度=%d 被回复ID=%s 被回复正文长度=%d",
@@ -1495,7 +1524,20 @@ async def run(
                                     if progress_message is not None:
                                         try:
                                             LOG.info("权限预检与状态消息发送成功，开始调用图片 API")
-                                            image_result = await generate_image(config, image_prompt)
+                                            for reference_message, reference_data in ((event.message, current_image), (reply_to_message, image_data)):
+                                                if reference_message is None:
+                                                    continue
+                                                document = getattr(reference_message, "document", None)
+                                                has_reference = getattr(reference_message, "photo", None) is not None or str(getattr(document, "mime_type", "")).startswith("image/")
+                                                if has_reference and not reference_data:
+                                                    raise RuntimeError("参考图片未能读取（单图需不超过 8 MB，支持 JPEG/PNG/WebP）；请重新发送，未进行图片生成。")
+                                            image_prompt, _sources = await prepare_image_prompt(
+                                                config, image_prompt, len(reply_images)
+                                            )
+                                            image_result = await generate_image(config, image_prompt, reply_images)
+                                            if _sources:
+                                                image_caption += "\n联网参考来源：\n" + "\n".join(_sources)
+                                                image_caption = fit_telegram_text(image_caption, 950)
                                             reply = "绘画完成啦>wO"
                                         except FloodWaitError:
                                             raise
@@ -1504,12 +1546,12 @@ async def run(
                                                 client, event.chat_id, progress_message
                                             )
                                             progress_message = None
-                                            LOG.warning("图片生成失败：%s", exc)
+                                            LOG.warning("图片生成失败（%s）", type(exc).__name__)
                                             reply = f"这次没画出来：{exc}"
                             except FloodWaitError:
                                 raise
                             except Exception as exc:
-                                LOG.warning("图片生成失败：%s", exc)
+                                LOG.warning("图片生成失败（%s）", type(exc).__name__)
                                 reply = f"这次没画出来：{exc}"
                     else:
                         if history_mode == "group_summary" and not context:
@@ -1557,7 +1599,8 @@ async def run(
                                         event.chat_id,
                                         image_file,
                                         reply_to=event.message.id,
-                                        caption="绘画完成啦>wO",
+                                        caption=image_caption,
+                                        parse_mode=None,
                                         force_document=True,
                                     )
                                     sent_in_source = True
@@ -1569,7 +1612,8 @@ async def run(
                                             event.chat_id,
                                             image_file,
                                             reply_to=event.message.id,
-                                            caption="绘画完成啦>wO",
+                                            caption=image_caption,
+                                            parse_mode=None,
                                             force_document=False,
                                         )
                                         sent_in_source = True
@@ -1581,7 +1625,8 @@ async def run(
                                         event.chat_id,
                                         image_file,
                                         reply_to=event.message.id,
-                                        caption=reply,
+                                        caption=image_caption,
+                                        parse_mode=None,
                                         force_document=False,
                                     )
                                     sent_in_source = True
@@ -1593,7 +1638,8 @@ async def run(
                                             event.chat_id,
                                             image_file,
                                             reply_to=event.message.id,
-                                            caption="绘画完成啦>wO",
+                                            caption=image_caption,
+                                            parse_mode=None,
                                             force_document=True,
                                         )
                                         sent_in_source = True
@@ -1607,6 +1653,7 @@ async def run(
                                     config.allowed_chat_ids,
                                     event.chat_id,
                                     backup_console_lock,
+                                    image_caption=image_caption,
                                 )
                                 if backup_result is not None:
                                     backup_chat_id, backup_title, backup_message = backup_result

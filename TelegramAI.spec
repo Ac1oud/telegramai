@@ -24,7 +24,7 @@ resources = [
 ]
 a = Analysis([str(root / "desktop_entry.py")], pathex=[str(root)],
     binaries=[], datas=resources,
-    hiddenimports=["account_manager", "main", "ui_effects", "project_updater", "app_runtime", "version", "gui_worker"],
+    hiddenimports=["account_manager", "main", "ui_effects", "project_updater", "app_runtime", "version", "gui_worker", "image_references"],
     hookspath=[], runtime_hooks=[], excludes=[], noarchive=False,
 )
 pyz = PYZ(a.pure)
