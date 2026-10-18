@@ -1172,7 +1172,7 @@ class AccountManager(tk.Tk):
         dialog.grab_set()
         ttk.Label(
             dialog,
-            text="分别设置谁能 @/回复触发智能体，以及哪些用户被识别为主人。两份名单互不替代；触发名单留空表示群白名单内所有成员都可触发。主人数字 ID 最稳定，用户名可改、仅作备用匹配。可按 Ctrl/Shift 多选；保存后重启监听生效。",
+            text="分别设置谁能 @/回复触发智能体，以及哪些用户被识别为主人。两份名单互不替代；触发名单留空表示群白名单内所有成员都可触发。主人数字 ID 最稳定，用户名可改、仅作备用匹配。可按 Ctrl/Shift 多选；保存后对正在运行的监听立即生效。",
             wraplength=720,
         ).grid(row=0, column=0, sticky="ew", padx=12, pady=(8, 4))
         columns = ttk.Frame(dialog, padding=(12, 0, 12, 8))
@@ -1392,7 +1392,7 @@ class AccountManager(tk.Tk):
                     updated = updated.rstrip() + "\n" + line + "\n"
             profile_file.write_text(updated, encoding="utf-8")
             self.status.set(
-                f"已保存 {profile} 用户名单：可触发 {len(sender_ids)} 人，主人 {len(owner_ids)} 个 ID / {len(owner_usernames)} 个用户名；重启监听后生效。"
+                f"已保存 {profile} 用户名单：可触发 {len(sender_ids)} 人，主人 {len(owner_ids)} 个 ID / {len(owner_usernames)} 个用户名；已对监听立即生效。"
             )
             animate_window_close(dialog)
 

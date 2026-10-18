@@ -106,6 +106,47 @@ def _env_float(name: str, default: float, env=None) -> float:
 
 
 @dataclass(frozen=True)
+class IdentityPermissions:
+    allowed_sender_ids: frozenset[int]
+    owner_user_ids: frozenset[int]
+    owner_usernames: frozenset[str]
+
+
+def load_identity_permissions(profile: str | None, fallback: "Config") -> IdentityPermissions:
+    """重新读取当前账号的用户权限，使界面保存的名单立即对监听生效。"""
+    source = PROFILE_DIR / f"{_validate_profile_name(profile)}.env" if profile else ROOT / ".env"
+    try:
+        values = dotenv_values(source, interpolate=False)
+        allowed_sender_ids = frozenset(
+            int(part.strip())
+            for part in str(values.get("ALLOWED_SENDER_IDS") or "").split(",")
+            if part.strip()
+        )
+        owner_user_ids = frozenset(
+            int(part.strip())
+            for part in str(values.get("OWNER_USER_IDS") or "").split(",")
+            if part.strip()
+        )
+        owner_usernames = frozenset(
+            part.strip().lstrip("@").casefold()
+            for part in str(values.get("OWNER_USERNAMES") or "").split(",")
+            if part.strip().lstrip("@")
+        )
+        if any(user_id <= 0 for user_id in (*allowed_sender_ids, *owner_user_ids)):
+            raise ValueError("用户 ID 必须是正整数")
+        if any(not re.fullmatch(r"[a-zA-Z0-9_]{5,32}", name) for name in owner_usernames):
+            raise ValueError("主人用户名格式错误")
+        return IdentityPermissions(allowed_sender_ids, owner_user_ids, owner_usernames)
+    except (OSError, TypeError, ValueError) as exc:
+        LOG.warning("重新读取账号用户权限失败，继续使用启动时名单（%s）", type(exc).__name__)
+        return IdentityPermissions(
+            fallback.allowed_sender_ids,
+            fallback.owner_user_ids,
+            fallback.owner_usernames,
+        )
+
+
+@dataclass(frozen=True)
 class Config:
     """集中保存 Telegram 连接、群聊限制和本地状态路径。"""
 
@@ -1327,17 +1368,21 @@ async def run(
                     reply_to_message = await event.get_reply_message()
                 if not is_mentioned(event.message, account.id, username, reply_to_message):
                     return
+                permissions = load_identity_permissions(profile, config)
                 sender_id = event.sender_id
                 sender_username = None
-                if config.owner_usernames:
+                if sender_id is None or permissions.owner_usernames:
                     try:
                         sender_entity = await event.get_sender()
+                        entity_id = getattr(sender_entity, "id", None)
+                        if sender_id is None and isinstance(entity_id, int):
+                            sender_id = entity_id
                         sender_username = getattr(sender_entity, "username", None)
                     except Exception as exc:
-                        LOG.warning("获取发言者 Telegram 实体失败，用户名校验本轮不可用（%s）", type(exc).__name__)
+                        LOG.warning("获取发言者 Telegram 实体失败，备用身份校验本轮不可用（%s）", type(exc).__name__)
                 sender_is_owner = (
-                    (sender_id is not None and sender_id in config.owner_user_ids)
-                    or bool(sender_username and sender_username.casefold() in config.owner_usernames)
+                    (sender_id is not None and sender_id in permissions.owner_user_ids)
+                    or bool(sender_username and sender_username.casefold() in permissions.owner_usernames)
                 )
                 LOG.info(
                     "识别到群 %s 的 AI 触发消息，发送者 user_id=%s username=%s，主人匹配=%s",
@@ -1347,8 +1392,8 @@ async def run(
                     sender_is_owner,
                 )
                 if (
-                    config.allowed_sender_ids
-                    and sender_id not in config.allowed_sender_ids
+                    permissions.allowed_sender_ids
+                    and sender_id not in permissions.allowed_sender_ids
                     and not sender_is_owner
                 ):
                     LOG.info("忽略未在触发用户白名单中的消息，user_id=%s", sender_id)

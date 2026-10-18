@@ -36,5 +36,32 @@ class ProfileIsolationTests(unittest.TestCase):
                 self.assertEqual(main.Config.load().allowed_chat_ids, {-999})
             self.assertEqual(dict(os.environ), before)
 
+    def test_identity_permissions_reload_after_profile_is_saved(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            profiles = root / 'profiles'
+            profiles.mkdir()
+            profile_file = profiles / 'active.env'
+            profile_file.write_text(
+                'ALLOWED_SENDER_IDS=101\nOWNER_USER_IDS=102\nOWNER_USERNAMES=old_owner\n',
+                encoding='utf-8',
+            )
+            fallback = type('Fallback', (), {
+                'allowed_sender_ids': frozenset({1}),
+                'owner_user_ids': frozenset({2}),
+                'owner_usernames': frozenset({'fallback'}),
+            })()
+            with patch.object(main, 'ROOT', root), patch.object(main, 'PROFILE_DIR', profiles):
+                before = main.load_identity_permissions('active', fallback)
+                self.assertEqual(before.owner_user_ids, {102})
+                profile_file.write_text(
+                    'ALLOWED_SENDER_IDS=201\nOWNER_USER_IDS=202\nOWNER_USERNAMES=@New_Owner\n',
+                    encoding='utf-8',
+                )
+                after = main.load_identity_permissions('active', fallback)
+                self.assertEqual(after.allowed_sender_ids, {201})
+                self.assertEqual(after.owner_user_ids, {202})
+                self.assertEqual(after.owner_usernames, {'new_owner'})
+
 if __name__ == '__main__':
     unittest.main()
