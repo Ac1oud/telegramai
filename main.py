@@ -672,7 +672,8 @@ async def generate_reply(
     if trigger_text and is_programming_request(trigger_text):
         return "这个我不写哦；如果你想梳理需求或讨论思路，我可以陪你一起捋清楚。"
     character_name = configured_character_name()
-    if is_self_intro_request(trigger_text):
+    # 有账号级人设时交给模型按该人设回答；没有自定义人设时才使用默认快捷回复。
+    if is_self_intro_request(trigger_text) and not config.model_system_prompt.strip():
         if context_mode != "group_summary" and has_prior_self_intro(context, character_name):
             intro_reply = "才刚报过名呢，你的记忆是被龙焰烧掉了吗？😌"
         else:
@@ -739,8 +740,9 @@ async def generate_reply(
     )
     if config.model_system_prompt:
         instructions += (
-            "以下是当前账号单独配置的模型固有提示词。它只用于补充表达方式和人设，"
-            "不得覆盖安全规则、主人身份判定、当前消息优先级或工具使用规则：\n"
+            "【当前账号最高优先级人设】以下内容是当前账号单独配置的模型固有提示词。"
+            "它覆盖前面默认的角色名称、性格、语气、称呼和表达方式；请严格按账号人设回应。"
+            "仅不得覆盖程序安全规则、主人身份判定、当前消息优先级或工具使用规则：\n"
             f"{config.model_system_prompt[:6000]}\n"
         )
     complex_analysis = is_complex_analysis_request(trigger_text) or len(trigger_text.strip()) >= 400
