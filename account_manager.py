@@ -715,17 +715,17 @@ class AccountManager(tk.Tk):
         dialog.title("发现新版本")
         dialog.transient(self)
         dialog.resizable(False, False)
-        dialog.geometry("380x190")
+        dialog.geometry("380x165")
         body = ttk.Frame(dialog, padding=12)
         body.pack(fill="both", expand=True)
         ttk.Label(body, text=f"Telegram AI 有新版本：{release.get('name') or tag}", justify="left").pack(anchor="w")
-        notes = str(release.get("body") or "")[:240].strip()
-        if notes:
-            ttk.Label(body, text=notes, justify="left", wraplength=340).pack(anchor="w", pady=(8, 10))
-        else:
-            ttk.Label(body, text=f"当前版本：{VERSION}").pack(anchor="w", pady=(8, 10))
         buttons = ttk.Frame(body)
-        buttons.pack(fill="x")
+        buttons.pack(side="bottom", fill="x", pady=(8, 0))
+        notes = str(release.get("body") or "")[:90].strip()
+        if notes:
+            ttk.Label(body, text=notes, justify="left", wraplength=340).pack(anchor="w", pady=(8, 0))
+        else:
+            ttk.Label(body, text=f"当前版本：{VERSION}").pack(anchor="w", pady=(8, 0))
 
         def later() -> None:
             try:
