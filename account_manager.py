@@ -28,6 +28,39 @@ if not FROZEN:
 from main import create_profile  # noqa: E402
 
 
+PROFILE_MODEL_KEYS = (
+    "OPENAI_API_KEY", "OPENAI_MODEL", "OPENAI_BASE_URL",
+    "OPENAI_IMAGE_API_KEY", "OPENAI_IMAGE_MODEL", "OPENAI_IMAGE_BASE_URL",
+    "OPENAI_IMAGE_SIZE", "WEB_SEARCH_ENABLED", "IMAGE_GENERATION_ENABLED",
+)
+
+
+def _account_model_values(profile_file: Path) -> tuple[dict[str, str | None], dict[str, str | None]]:
+    """返回账号有效模型配置和账号文件原值；旧账号缺项时读取共享默认值。"""
+    from dotenv import dotenv_values
+
+    shared = dict(dotenv_values(ROOT / ".env", interpolate=False)) if (ROOT / ".env").exists() else {}
+    profile = dict(dotenv_values(profile_file, interpolate=False)) if profile_file.exists() else {}
+    effective = dict(shared)
+    effective.update({key: value for key, value in profile.items() if key in PROFILE_MODEL_KEYS})
+    return effective, profile
+
+
+def _write_profile_settings(profile_file: Path, updates: dict[str, str]) -> None:
+    text = profile_file.read_text(encoding="utf-8-sig") if profile_file.exists() else ""
+    for name, value in updates.items():
+        encoded = "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+        line = f"{name}={encoded}"
+        pattern = re.compile(rf"(?m)^{re.escape(name)}=.*$")
+        if pattern.search(text):
+            text = pattern.sub(lambda _match, line=line: line, text, count=1)
+        else:
+            if text and not text.endswith("\n"):
+                text += "\n"
+            text += line + "\n"
+    profile_file.write_text(text, encoding="utf-8")
+
+
 def python_console_executable() -> str:
     """GUI 由 pythonw 启动时，子进程改用 python，以显示登录提示。"""
     executable = Path(sys.executable)
@@ -343,17 +376,14 @@ class AccountManager(tk.Tk):
         return self.profile_names[selection[0]]
 
     def manage_image_settings(self) -> None:
-        """编辑共享服务配置，并将生图开关保存到当前账号 profile。"""
-        env_file = ROOT / ".env"
+        """编辑当前账号独立的图片服务配置。"""
         profile = self.selected_profile()
         if not profile:
             messagebox.showinfo("未选择账号", "请先选择要配置的账号。")
             return
         profile_file = PROFILE_DIR / f"{profile}.env"
         try:
-            from dotenv import dotenv_values
-
-            values = dotenv_values(env_file) if env_file.exists() else {}
+            values, profile_values = _account_model_values(profile_file)
         except (OSError, UnicodeError, ValueError) as exc:
             messagebox.showerror("读取生图设置失败", str(exc))
             return
@@ -367,18 +397,13 @@ class AccountManager(tk.Tk):
         body = ttk.Frame(dialog, padding=16)
         body.pack(fill="both", expand=True)
 
-        try:
-            profile_values = dotenv_values(profile_file) if profile_file.exists() else {}
-        except (OSError, UnicodeError, ValueError) as exc:
-            messagebox.showerror("读取账号生图设置失败", str(exc))
-            return
         enabled = tk.BooleanVar(value=str(profile_values.get("IMAGE_GENERATION_ENABLED", values.get("IMAGE_GENERATION_ENABLED", "true"))).strip().lower() in {"1", "true", "yes", "on"})
         ttk.Checkbutton(body, text="启用生图功能", variable=enabled).grid(
             row=0, column=0, columnspan=2, sticky="w", pady=(0, 10)
         )
         ttk.Label(
             body,
-            text=f"当前账号：{profile}。生图开关保存到该账号；服务地址、模型和 API Key 由所有账号共享。保存后重启监听生效。",
+            text=f"当前账号：{profile}。生图开关、服务地址、模型和 API Key 均只保存到该账号配置文件；保存后重启此账号监听生效。",
             wraplength=570,
         ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 12))
 
@@ -422,8 +447,8 @@ class AccountManager(tk.Tk):
                 messagebox.showerror("缺少模型名称", "启用生图时请填写服务支持的图片模型名称。", parent=dialog)
                 return
             try:
-                current_text = env_file.read_text(encoding="utf-8-sig") if env_file.exists() else ""
                 updates = {
+                    "IMAGE_GENERATION_ENABLED": "true" if enabled.get() else "false",
                     "WEB_SEARCH_ENABLED": "true" if search_enabled.get() else "false",
                     "OPENAI_IMAGE_BASE_URL": base_url,
                     "OPENAI_IMAGE_MODEL": model,
@@ -433,25 +458,7 @@ class AccountManager(tk.Tk):
                     updates["OPENAI_IMAGE_API_KEY"] = ""
                 elif entered_key:
                     updates["OPENAI_IMAGE_API_KEY"] = entered_key
-                for name, value in updates.items():
-                    encoded = "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
-                    line = f"{name}={encoded}"
-                    pattern = re.compile(rf"(?m)^{re.escape(name)}=.*$")
-                    if pattern.search(current_text):
-                        current_text = pattern.sub(lambda _match, line=line: line, current_text, count=1)
-                    else:
-                        if current_text and not current_text.endswith("\n"):
-                            current_text += "\n"
-                        current_text += line + "\n"
-                env_file.write_text(current_text, encoding="utf-8")
-                profile_text = profile_file.read_text(encoding="utf-8-sig") if profile_file.exists() else ""
-                profile_line = "IMAGE_GENERATION_ENABLED=" + ("true" if enabled.get() else "false")
-                profile_pattern = re.compile(r"(?m)^IMAGE_GENERATION_ENABLED=.*$")
-                if profile_pattern.search(profile_text):
-                    profile_text = profile_pattern.sub(profile_line, profile_text, count=1)
-                else:
-                    profile_text = profile_text.rstrip() + "\n" + profile_line + "\n"
-                profile_file.write_text(profile_text, encoding="utf-8")
+                _write_profile_settings(profile_file, updates)
             except OSError as exc:
                 messagebox.showerror("保存生图设置失败", str(exc), parent=dialog)
                 return
@@ -464,12 +471,14 @@ class AccountManager(tk.Tk):
         AnimatedButton(buttons, text="取消", command=lambda: animate_window_close(dialog)).pack(side="right", padx=(0, 8))
 
     def manage_model_settings(self) -> None:
-        """编辑共享 .env 中的聊天模型名称、API Key 和 API 地址。"""
-        env_file = ROOT / ".env"
+        """编辑当前账号独立的聊天模型名称、API Key 和 API 地址。"""
+        profile = self.selected_profile()
+        if not profile:
+            messagebox.showinfo("未选择账号", "请先选择要配置的账号。")
+            return
+        profile_file = PROFILE_DIR / f"{profile}.env"
         try:
-            from dotenv import dotenv_values
-
-            values = dotenv_values(env_file) if env_file.exists() else {}
+            values, _profile_values = _account_model_values(profile_file)
         except (OSError, UnicodeError, ValueError) as exc:
             messagebox.showerror("读取语言模型设置失败", str(exc))
             return
@@ -484,7 +493,7 @@ class AccountManager(tk.Tk):
         body.pack(fill="both", expand=True)
         ttk.Label(
             body,
-            text="设置聊天模型名称、服务 API URL 和 API Key。配置为所有账号共享；保存后重启监听生效。Key 留空保留原值，可勾选清除。",
+            text=f"当前账号：{profile}。聊天模型名称、服务 API URL 和 API Key 只保存到该账号配置文件；保存后重启此账号监听生效。Key 留空保留原值，可勾选清除。",
             wraplength=570,
         ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 12))
 
@@ -518,24 +527,13 @@ class AccountManager(tk.Tk):
                 messagebox.showerror("URL 格式错误", "请输入完整的 http:// 或 https:// API Base URL。", parent=dialog)
                 return
             try:
-                current_text = env_file.read_text(encoding="utf-8-sig") if env_file.exists() else ""
                 updates = {"OPENAI_MODEL": model, "OPENAI_BASE_URL": base_url}
                 entered_key = key_var.get().strip()
                 if clear_key.get():
                     updates["OPENAI_API_KEY"] = ""
                 elif entered_key:
                     updates["OPENAI_API_KEY"] = entered_key
-                for name, value in updates.items():
-                    encoded = "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
-                    line = f"{name}={encoded}"
-                    pattern = re.compile(rf"(?m)^{re.escape(name)}=.*$")
-                    if pattern.search(current_text):
-                        current_text = pattern.sub(lambda _match, line=line: line, current_text, count=1)
-                    else:
-                        if current_text and not current_text.endswith("\n"):
-                            current_text += "\n"
-                        current_text += line + "\n"
-                env_file.write_text(current_text, encoding="utf-8")
+                _write_profile_settings(profile_file, updates)
             except OSError as exc:
                 messagebox.showerror("保存语言模型设置失败", str(exc), parent=dialog)
                 return

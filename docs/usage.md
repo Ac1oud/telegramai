@@ -39,7 +39,7 @@ python main.py
 
 工作台采用 GPT 结形与 Telegram 小飞机组合图标。窗口与设置弹窗以短距离位移和轻微回弹打开，关闭时向下退出；动画期间保持窗口及控件尺寸不变，避免反复排版闪动，全程不透明；按钮悬停、账号选中和状态文字也有过渡效果。更新后需重新打开工作台才能看到新界面。
 
-双击 `open-account-manager.bat` 打开桌面窗口，选择账号后可用手机号验证码登录并列群、二维码登录、启动监听、停止由本窗口启动的监听、新建账号配置、导入已有 session、查看文件路径、设置列表显示名称、管理群白名单、管理触发用户白名单或从切换器移除配置。“生图设置”可开关生图并设置图片服务的 Key、Base URL 和模型；“语言模型管理”可设置聊天模型的模型名称、Key 和 Base URL。两者都编辑根目录 `.env`，由所有账号共享，保存后需重启监听生效。群白名单窗口的“获取群 ID”会从当前账号已授权的 session 获取群名和 ID，可多选后加入白名单；触发用户白名单可限制哪些成员能够触发模型。修改白名单后需重启该账号的监听进程。显示名称只用于区分列表项目，不会修改 Telegram 账号、配置名或 session。导入 session 只登记现有文件路径，不移动或复制文件；移除配置不会删除 session 或状态数据库。首次切换到新号时选择对应账号 → 手机号登录/列群，在弹出的终端按提示登录；收不到验证码时改选二维码登录。
+双击 `open-account-manager.bat` 打开桌面窗口，选择账号后可用手机号验证码登录并列群、二维码登录、启动监听、停止由本窗口启动的监听、新建账号配置、导入已有 session、查看文件路径、设置列表显示名称、管理群白名单、管理触发用户白名单或从切换器移除配置。“生图设置”可为当前账号单独设置生图开关、图片模型、Key 和 Base URL；“语言模型管理”可为当前账号单独设置聊天模型、Key 和 Base URL。两者都写入当前 `profiles/<账号>.env`，保存后重启该账号监听生效，不影响其他账号。群白名单窗口的“获取群 ID”会从当前账号已授权的 session 获取群名和 ID，可多选后加入白名单；触发用户白名单可限制哪些成员能够触发模型。用户权限名单保存后会立即生效。显示名称只用于区分列表项目，不会修改 Telegram 账号、配置名或 session。导入 session 只登记现有文件路径，不移动或复制文件；移除配置不会删除 session 或状态数据库。首次切换到新号时选择对应账号 → 手机号登录/列群，在弹出的终端按提示登录；收不到验证码时改选二维码登录。
 
 ## GitHub 在线更新
 
@@ -103,7 +103,7 @@ git push origin main
 
 开发验证：`python -m unittest discover -s tests -v`。更新测试使用临时本地仓库，不访问 Telegram 或 GitHub。
 
-新账号配置有独立的 `SESSION_PATH`、`STATE_PATH` 和白名单。根目录 `.env` 中的 Telegram API ID/Hash 与模型 API 配置由账号配置共享；`profiles/*.env` 只保存账号级设置，已加入 `.gitignore`。以后新增配置可运行 `python main.py --create-profile 名称 --copy-settings-from current`，也可以从窗口创建。不要同时启动同一个 profile 的多个进程。
+新账号配置有独立的 `SESSION_PATH`、`STATE_PATH`、白名单、聊天模型和图片模型配置。根目录 `.env` 中的 Telegram API ID/Hash 仍由账号共享；旧账号尚未保存独立模型设置时，会兼容读取根目录中的旧模型配置。`profiles/*.env` 包含账号级 API Key，已加入 `.gitignore`，不得上传或分享。以后新增配置可运行 `python main.py --create-profile 名称 --copy-settings-from current`，也可以从窗口创建。不要同时启动同一个 profile 的多个进程。
 
 Ubuntu/Linux 可通过 `python main.py --profile new_account --qr-login` 授权，或用 `python main.py --profile new_account` 启动监听。
 
@@ -149,13 +149,13 @@ sudo journalctl -u tg-group-assistant -f
 - `GLOBAL_SEND_INTERVAL_SECONDS`：所有群组共享的最短发送间隔，最低 1 秒。
 - `MAX_REPLY_UTF16_UNITS`：回复长度上限，按 Telegram 的 UTF-16 单位截断。
 - 普通文字回复超过 50 个字符时，先发送约一半（尽量落在句末），约 1 秒后编辑为完整内容；编辑失败时补发剩余文本。图片和语音回复保持原样。
-- `OPENAI_API_KEY`、`OPENAI_MODEL`、`OPENAI_BASE_URL`：OpenAI API 密钥、模型名称和可选的兼容服务地址。
-- 账号管理器的“语言模型管理”可直接修改上述三项；API Key 输入框隐藏当前密钥，留空保留原值，也可明确清除。修改后重启监听生效。
+- `OPENAI_API_KEY`、`OPENAI_MODEL`、`OPENAI_BASE_URL`：当前账号的 OpenAI API 密钥、模型名称和可选兼容服务地址，保存在所选账号的 profile 文件中。
+- 账号管理器的“语言模型管理”可单独修改当前账号的上述三项；API Key 输入框隐藏当前密钥，留空保留原值，也可明确清除。修改后只需重启该账号监听。
 - `WEB_SEARCH_ENABLED`：启用后，包含网址或明确要求联网查询的提及会尝试调用 Responses API 的网页搜索工具；兼容服务需要支持该工具。
 - `VOICE_REPLY_ENABLED`：主开关开启后，仅当当前 @/回复消息含“发语音”时合成语音；需要音频服务支持 `/v1/audio/speech`，失败时自动回退为单条文字。
 - `OPENAI_AUDIO_BASE_URL` / `OPENAI_AUDIO_API_KEY`：可单独指定语音服务；留空时沿用模型 API 配置。
 - `OPENAI_SPEECH_MODEL` / `VOICE_REPLY_VOICE`：语音合成模型和音色。
-- `OPENAI_IMAGE_BASE_URL` / `OPENAI_IMAGE_API_KEY` / `OPENAI_IMAGE_MODEL`：可单独配置图片 API 地址、密钥和服务商提供的图片模型名；密钥和地址留空时分别沿用 `OPENAI_API_KEY`、`OPENAI_BASE_URL`。仅填写服务商确实支持 Images API 的模型。
+- `OPENAI_IMAGE_BASE_URL` / `OPENAI_IMAGE_API_KEY` / `OPENAI_IMAGE_MODEL`：为当前账号单独配置图片 API 地址、密钥和服务商提供的图片模型名；密钥和地址留空时分别沿用同一账号的 `OPENAI_API_KEY`、`OPENAI_BASE_URL`。仅填写服务商确实支持 Images API 的模型。
 - `IMAGE_GENERATION_ENABLED`：生图总开关；也可在账号管理器“生图设置”中切换，关闭时命中关键词不会调用图片 API。
 - `OPENAI_IMAGE_SIZE`：可选的图片尺寸；留空时使用图片服务默认值。
 

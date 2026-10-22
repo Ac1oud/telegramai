@@ -36,6 +36,11 @@ from app_runtime import ROOT
 from image_references import prepare_image_prompt
 PROFILE_DIR = ROOT / "profiles"
 LOG = logging.getLogger("group_assistant")
+PROFILE_MODEL_KEYS = (
+    "OPENAI_API_KEY", "OPENAI_MODEL", "OPENAI_BASE_URL",
+    "OPENAI_IMAGE_API_KEY", "OPENAI_IMAGE_MODEL", "OPENAI_IMAGE_BASE_URL",
+    "OPENAI_IMAGE_SIZE", "WEB_SEARCH_ENABLED", "IMAGE_GENERATION_ENABLED",
+)
 
 
 def configured_character_name() -> str:
@@ -50,6 +55,23 @@ def _validate_profile_name(name: str) -> str:
     return name
 
 
+def migrate_profile_model_settings(profile_file: Path) -> None:
+    """把旧版共享模型设置一次性复制到旧账号文件，已有账号值保持不变。"""
+    profile_values = dotenv_values(profile_file, interpolate=False)
+    missing = [key for key in PROFILE_MODEL_KEYS if key not in profile_values]
+    if not missing:
+        return
+    shared = dotenv_values(ROOT / ".env", interpolate=False)
+    text = profile_file.read_text(encoding="utf-8-sig")
+    if text and not text.endswith("\n"):
+        text += "\n"
+    for key in missing:
+        value = str(shared.get(key) or ("true" if key in {"WEB_SEARCH_ENABLED", "IMAGE_GENERATION_ENABLED"} else ""))
+        encoded = "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+        text += f"{key}={encoded}\n"
+    profile_file.write_text(text, encoding="utf-8")
+
+
 def create_profile(name: str, copy_settings_from: str | None = None) -> Path:
     """创建隔离的 Telegram 账号配置，不复制 API 密钥或登录 session。"""
     name = _validate_profile_name(name)
@@ -58,26 +80,34 @@ def create_profile(name: str, copy_settings_from: str | None = None) -> Path:
     if profile_file.exists():
         raise FileExistsError(f"账号配置已存在：{name}")
 
-    source: dict[str, str | None] = {}
+    shared = dotenv_values(ROOT / ".env", interpolate=False)
+    source: dict[str, str | None] = dict(shared)
     if copy_settings_from:
         source_name = _validate_profile_name(copy_settings_from)
         source_file = ROOT / ".env" if source_name == "default" else PROFILE_DIR / f"{source_name}.env"
         if not source_file.exists():
             raise FileNotFoundError(f"找不到要复制设置的账号配置：{source_name}")
-        source = dotenv_values(source_file)
+        source.update(dotenv_values(source_file, interpolate=False))
 
     # 新账号不继承旧账号的手机号/用户名，只可选择继承测试群白名单。
     phone = ""
     username = ""
-    allowed_chat_ids = source.get("ALLOWED_CHAT_IDS") or ""
+    allowed_chat_ids = (source.get("ALLOWED_CHAT_IDS") or "") if copy_settings_from else ""
     image_generation_enabled = source.get("IMAGE_GENERATION_ENABLED") or "true"
+    def model_line(key: str) -> str:
+        value = str(source.get(key) or "")
+        encoded = "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+        return f"{key}={encoded}\n"
+
+    model_lines = "".join(model_line(key) for key in PROFILE_MODEL_KEYS if key != "IMAGE_GENERATION_ENABLED")
     profile_file.write_text(
-        "# 此文件仅保存本账号的 Telegram 设置；不要放 API 密钥。\n"
+        "# 此文件保存本账号的 Telegram 与模型设置；包含密钥，请勿上传或分享。\n"
         f"TELEGRAM_PHONE={phone}\n"
         f"TELEGRAM_USERNAME={username}\n"
         f"ALLOWED_CHAT_IDS={allowed_chat_ids}\n"
         "ALLOWED_SENDER_IDS=\nOWNER_USER_IDS=\nOWNER_USERNAMES=\n"
         f"IMAGE_GENERATION_ENABLED={image_generation_enabled}\n"
+        f"{model_lines}"
         f"SESSION_PATH=data/profiles/{name}/telegram\n"
         f"STATE_PATH=data/profiles/{name}/state.sqlite3\n",
         encoding="utf-8",
@@ -191,6 +221,7 @@ class Config:
             profile_file = PROFILE_DIR / f"{profile}.env"
             if not profile_file.exists():
                 raise FileNotFoundError(f"账号配置 {profile} 不存在")
+            migrate_profile_model_settings(profile_file)
             values = dotenv_values(profile_file, interpolate=False)
             account_defaults = {
                 "TELEGRAM_PHONE": "", "TELEGRAM_USERNAME": "",
@@ -201,9 +232,10 @@ class Config:
             }
             for key, default in account_defaults.items():
                 env[key] = values.get(key) or default
-            profile_image_enabled = values.get("IMAGE_GENERATION_ENABLED")
-            if profile_image_enabled is not None and str(profile_image_enabled).strip():
-                env["IMAGE_GENERATION_ENABLED"] = str(profile_image_enabled)
+            # 旧账号缺少这些字段时沿用根 .env；保存任一模型设置后由账号文件独立覆盖。
+            for key in PROFILE_MODEL_KEYS:
+                if key in values and values[key] is not None:
+                    env[key] = str(values[key])
         try:
             api_id = int(env["TELEGRAM_API_ID"])
         except (KeyError, ValueError) as exc:
