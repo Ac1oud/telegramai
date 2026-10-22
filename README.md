@@ -6,7 +6,7 @@
 
 一个在本机运行的 Telegram 多账号 AI 助手。通过桌面工作台管理账号、登录会话和群组权限，让 AI 在指定群组中响应提及与回复。
 
-**26.1.2 alpha** · Windows 桌面版 · Python / Telethon
+**26.1.3 alpha** · Windows 桌面版 · Python / Telethon
 
 [下载 Windows EXE](https://github.com/Ac1oud/telegramai/releases) · [完整使用指南](docs/usage.md)
 

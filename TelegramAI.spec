@@ -1,5 +1,7 @@
 # Run: python -m PyInstaller --noconfirm TelegramAI.spec
 from pathlib import Path
+import certifi
+import ssl
 from PyInstaller.utils.win32.versioninfo import VSVersionInfo, FixedFileInfo, StringFileInfo, StringTable, StringStruct, VarFileInfo, VarStruct
 
 root = Path(SPECPATH)
@@ -21,7 +23,13 @@ resources = [
     (str(root / "assets" / "app-icon-64.png"), "assets"),
     (str(root / "assets" / "app-icon.ico"), "assets"),
     (str(root / ".env.example"), "."),
+    (certifi.where(), "."),
 ]
+# The bundled Python runtime loads this companion certificate file while
+# constructing SSLContext, before loading the public CA bundle.
+runtime_ca = Path(ssl.__file__).with_name("codex-rejected-cas.pem")
+if runtime_ca.is_file():
+    resources.append((str(runtime_ca), "."))
 a = Analysis([str(root / "desktop_entry.py")], pathex=[str(root)],
     binaries=[], datas=resources,
     hiddenimports=["account_manager", "main", "ui_effects", "project_updater", "release_updater", "app_runtime", "version", "gui_worker", "image_references"],

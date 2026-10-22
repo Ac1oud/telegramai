@@ -62,6 +62,13 @@ def run() -> None:
     if sys.argv[1:] == ["--version"]:
         print(VERSION)
         return
+    if sys.argv[1:] == ["--check-update"]:
+        import json
+        from release_updater import API, _request
+
+        releases = json.loads(_request(API))
+        print(json.dumps({"version": VERSION, "connection": "ok", "releases": [r.get("tag_name") for r in releases if not r.get("draft")]}, ensure_ascii=False))
+        return
     if len(sys.argv) > 1 and sys.argv[1] in {"--worker", "--worker-console"}:
         interactive = sys.argv.pop(1) == "--worker-console"
         if interactive and os.name == "nt":

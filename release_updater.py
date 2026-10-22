@@ -7,11 +7,15 @@ import json
 import os
 from pathlib import Path
 import re
+import ssl
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.error
 import urllib.request
+
+import certifi
 
 from version import RELEASE_TAG, VERSION
 
@@ -32,12 +36,15 @@ def _version_key(tag: str) -> tuple[int, ...]:
     return tuple(int(part) for part in parts)
 
 
-def _opener():
-    # urllib discovers environment and Windows Internet Settings proxies.
+def _openers():
+    """Try Windows/environment proxy settings first, then a direct connection."""
     proxies = urllib.request.getproxies()
     if "https" not in proxies and "http" in proxies:
         proxies["https"] = proxies["http"]
-    return urllib.request.build_opener(urllib.request.ProxyHandler(proxies))
+    ca_file = Path(sys._MEIPASS) / "cacert.pem" if getattr(sys, "frozen", False) else Path(certifi.where())
+    context = ssl.create_default_context(cafile=str(ca_file))
+    handlers = [urllib.request.ProxyHandler(proxies), urllib.request.ProxyHandler({})]
+    return [urllib.request.build_opener(handler, urllib.request.HTTPSHandler(context=context)) for handler in handlers]
 
 
 def _request(url: str, *, binary: bool = False) -> bytes:
@@ -47,20 +54,25 @@ def _request(url: str, *, binary: bool = False) -> bytes:
         "Accept": "application/octet-stream" if binary else "application/vnd.github+json",
         "User-Agent": USER_AGENT,
     })
-    try:
-        with _opener().open(request, timeout=30 if not binary else 180) as response:
-            final_host = response.geturl().split("/", 3)[2].lower()
-            if final_host not in {"api.github.com", "github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"}:
-                raise ReleaseUpdateError("GitHub 更新下载跳转到了不受信任的地址。")
-            return response.read()
-    except urllib.error.HTTPError as exc:
-        if exc.code in {401, 403, 404}:
-            raise ReleaseUpdateError(
-                "GitHub 更新不可访问（HTTP " + str(exc.code) + "）。请确认 telegramai 仓库和 Release 已设为公开。"
-            ) from exc
-        raise ReleaseUpdateError(f"GitHub 更新服务返回 HTTP {exc.code}，请稍后重试。") from exc
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise ReleaseUpdateError("连接 GitHub 更新服务失败，请检查网络后重试。") from exc
+    errors = []
+    for opener in _openers():
+        try:
+            with opener.open(request, timeout=30 if not binary else 180) as response:
+                final_host = response.geturl().split("/", 3)[2].lower()
+                if final_host not in {"api.github.com", "github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"}:
+                    raise ReleaseUpdateError("GitHub 更新下载跳转到了不受信任的地址。")
+                return response.read()
+        except urllib.error.HTTPError as exc:
+            if exc.code in {401, 403, 404}:
+                raise ReleaseUpdateError(
+                    "GitHub 更新不可访问（HTTP " + str(exc.code) + "）。请确认 telegramai 仓库和 Release 已设为公开。"
+                ) from exc
+            errors.append(f"HTTP {exc.code}")
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            reason = getattr(exc, "reason", exc)
+            errors.append(f"{type(reason).__name__}: {reason}")
+    detail = "; ".join(dict.fromkeys(errors))
+    raise ReleaseUpdateError(f"连接 GitHub 更新服务失败：{detail or '未知网络错误'}")
 
 
 def check_latest(*, now: float | None = None) -> dict | None:

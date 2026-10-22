@@ -12,19 +12,35 @@ import release_updater as updater
 
 
 class ReleaseUpdaterTests(unittest.TestCase):
-    def test_https_updates_reuse_system_http_proxy_when_no_https_proxy_exists(self):
-        proxy_handler = object()
+    def test_request_falls_back_to_direct_connection(self):
+        failed = unittest.mock.Mock()
+        failed.open.side_effect = urllib.error.URLError("proxy unavailable")
+        response = unittest.mock.MagicMock()
+        response.__enter__.return_value = response
+        response.geturl.return_value = updater.API
+        response.read.return_value = b"[]"
+        direct = unittest.mock.Mock()
+        direct.open.return_value = response
+        with patch.object(updater, "_openers", return_value=[failed, direct]):
+            self.assertEqual(updater._request(updater.API), b"[]")
+
+    def test_https_updates_try_system_proxy_then_direct(self):
+        proxy_handlers = [object(), object()]
         with patch.object(updater.urllib.request, "getproxies", return_value={"http": "http://proxy.example:8080"}), \
-             patch.object(updater.urllib.request, "ProxyHandler", return_value=proxy_handler) as make_handler, \
-             patch.object(updater.urllib.request, "build_opener", return_value="opener") as build_opener:
-            self.assertEqual(updater._opener(), "opener")
-        make_handler.assert_called_once_with({"http": "http://proxy.example:8080", "https": "http://proxy.example:8080"})
-        build_opener.assert_called_once_with(proxy_handler)
+             patch.object(updater.urllib.request, "ProxyHandler", side_effect=proxy_handlers) as make_handler, \
+             patch.object(updater.urllib.request, "HTTPSHandler", return_value="https"), \
+             patch.object(updater.ssl, "create_default_context", return_value="context"), \
+             patch.object(updater.certifi, "where", return_value="ca.pem"), \
+             patch.object(updater.urllib.request, "build_opener", side_effect=["proxy", "direct"]):
+            self.assertEqual(updater._openers(), ["proxy", "direct"])
+        self.assertEqual(make_handler.call_args_list[0].args[0], {"http": "http://proxy.example:8080", "https": "http://proxy.example:8080"})
+        self.assertEqual(make_handler.call_args_list[1].args[0], {})
 
     def test_private_or_missing_release_is_reported_as_visibility_problem(self):
         error = urllib.error.HTTPError(updater.API, 404, "Not Found", {}, None)
-        with patch.object(updater, "_opener") as opener:
-            opener.return_value.open.side_effect = error
+        with patch.object(updater, "_openers") as openers:
+            opener = openers.return_value = [unittest.mock.Mock()]
+            opener[0].open.side_effect = error
             with self.assertRaisesRegex(updater.ReleaseUpdateError, "HTTP 404.*设为公开"):
                 updater._request(updater.API)
 
@@ -32,13 +48,13 @@ class ReleaseUpdaterTests(unittest.TestCase):
         releases = [
             {"tag_name": "v27.0.0-alpha", "draft": True},
             {"tag_name": "v26.1.0-alpha", "draft": False},
-            {"tag_name": "v26.1.3-alpha", "draft": False},
+            {"tag_name": "v26.1.4-alpha", "draft": False},
             {"tag_name": "v26.1.1-alpha", "draft": False},
             {"tag_name": "unversioned", "draft": False},
         ]
         with patch.object(updater, "_request", return_value=json.dumps(releases).encode()):
             latest = updater.check_latest()
-        self.assertEqual(latest["tag_name"], "v26.1.3-alpha")
+        self.assertEqual(latest["tag_name"], "v26.1.4-alpha")
 
     def test_download_verifies_release_digest_before_writing(self):
         payload = b"verified executable bytes"
