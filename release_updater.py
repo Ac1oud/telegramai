@@ -75,8 +75,12 @@ def _request(url: str, *, binary: bool = False) -> bytes:
     raise ReleaseUpdateError(f"连接 GitHub 更新服务失败：{detail or '未知网络错误'}")
 
 
-def check_latest(*, now: float | None = None) -> dict | None:
-    """Return a newer public release, unless this tag is currently snoozed."""
+def check_latest(*, now: float | None = None, ignore_snooze: bool = False) -> dict | None:
+    """Return the newest public release newer than this build.
+
+    Automatic startup checks honor the user's snooze choice. A manual check
+    always re-reads GitHub and bypasses that reminder suppression.
+    """
     try:
         releases = json.loads(_request(API).decode("utf-8"))
     except (UnicodeError, json.JSONDecodeError) as exc:
@@ -95,7 +99,7 @@ def check_latest(*, now: float | None = None) -> dict | None:
         candidates.append(item)
     candidates.sort(key=lambda item: _version_key(str(item["tag_name"])), reverse=True)
     latest = next((item for item in candidates if _version_key(str(item.get("tag_name", ""))) > current), None)
-    if latest and is_snoozed(str(latest.get("tag_name", "")), now=now):
+    if latest and not ignore_snooze and is_snoozed(str(latest.get("tag_name", "")), now=now):
         return None
     return latest
 
@@ -163,12 +167,15 @@ def launch_replacement(executable: Path, staging: Path) -> None:
     script = r'''param([int]$ParentId, [string]$Executable, [string]$Staging, [string]$Backup)
 $ErrorActionPreference = 'Stop'
 while (Get-Process -Id $ParentId -ErrorAction SilentlyContinue) { Start-Sleep -Milliseconds 250 }
+# PyInstaller one-file processes may still be releasing their _MEI directory
+# for a short moment after the parent PID disappears. Let that cleanup settle.
+Start-Sleep -Seconds 3
 $NewProcess = $null
 try {
     if (Test-Path -LiteralPath $Backup) { Remove-Item -LiteralPath $Backup -Force }
     Move-Item -LiteralPath $Executable -Destination $Backup
     Move-Item -LiteralPath $Staging -Destination $Executable
-    $NewProcess = Start-Process -FilePath $Executable -ArgumentList '--update-complete' -PassThru
+    $NewProcess = Start-Process -FilePath $Executable -ArgumentList '--update-complete' -WorkingDirectory (Split-Path -Parent $Executable) -PassThru
     Start-Sleep -Seconds 12
     $NewProcess.Refresh()
     if ($NewProcess.HasExited) { throw 'Updated application exited during startup.' }

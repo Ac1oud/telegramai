@@ -669,10 +669,11 @@ class AccountManager(tk.Tk):
         if self.release_busy:
             return
         self.release_busy = True
+        manual = self.release_manual
 
         def worker() -> None:
             try:
-                self.release_results.put(check_latest())
+                self.release_results.put(check_latest(ignore_snooze=manual))
             except Exception as exc:
                 self.release_results.put(exc)
 
