@@ -61,7 +61,9 @@ python main.py
 
 在现有 Git 项目中使用时，将 EXE 放在 `open-account-manager.bat` 旁边，便可继续使用已有的本地配置。EXE 优先加载该 Git 项目中的程序源码，因此“同步更新”后的代码会在重启后生效；该模式仍需要 Git。EXE 内置的第三方依赖不会随源码更新，依赖变更时请下载新版 EXE。
 
-单独使用 EXE（旁边没有 `.git`）时，更新按钮会打开 Releases。先退出工作台与监听进程，下载新版并替换原 EXE，保留旁边的 `.env`、`profiles/` 和 `data/`。BAT 与 Python 源码继续保留，可按原来的方式启动。
+单独使用 EXE（旁边没有 `.git`）时，应用启动会自动检查公开 Releases。发现新版本后可选择稍后提醒或立即更新；应用会下载同名新版 EXE、校验 SHA-256、退出后自动替换并重启。若新版启动失败，会恢复旧版。账号配置、API Key、session 和数据文件不会随程序更新而覆盖。BAT 与 Python 源码继续保留，可按原来的方式启动。
+
+匿名应用内更新要求仓库和 Release 都公开；私有仓库会对其他电脑返回 404。未签名 Windows EXE 仍可能显示 SmartScreen 提示，这与更新流程无关。
 
 开发者可在 Windows 安装 Python 3.12 后运行 `powershell -ExecutionPolicy Bypass -File .\build-windows.ps1`，生成的两个单文件位于 `dist/TelegramAI.exe` 和 `dist/TelegramAI-console.exe`。打包只包含程序、运行依赖、图标与空白 `.env.example`，通过明确资源清单排除所有本地账号和密钥。
 

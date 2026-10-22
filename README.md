@@ -6,7 +6,7 @@
 
 一个在本机运行的 Telegram 多账号 AI 助手。通过桌面工作台管理账号、登录会话和群组权限，让 AI 在指定群组中响应提及与回复。
 
-**26.1.1 alpha** · Windows 桌面版 · Python / Telethon
+**26.1.2 alpha** · Windows 桌面版 · Python / Telethon
 
 [下载 Windows EXE](https://github.com/Ac1oud/telegramai/releases) · [完整使用指南](docs/usage.md)
 
@@ -31,7 +31,7 @@
 
 `TelegramAI.exe` 为无终端版，运行与登录使用图形操作窗口，不打开 CMD。`TelegramAI-console.exe` 为命令行版，保留终端输出及交互，便于排错。两者各自包含完整依赖，可单独使用。
 
-应用启动时会在后台检查 GitHub Releases。发现新版后可选择稍后提醒或立即更新；应用会下载对应 EXE、校验 SHA-256、替换并重启。更新不会覆盖同目录下的 `.env`、`profiles`、`data` 和 session 文件。源码版仍可通过“同步更新”快进 Git 仓库。
+独立 EXE 启动时会在后台检查 GitHub Releases。发现新版后可选择稍后提醒或立即更新；应用会在窗口内下载对应 EXE、校验 SHA-256、替换并自动重启，完成后显示更新成功。若新版启动失败，会恢复旧版并重启。更新不会覆盖同目录下的 `.env`、`profiles`、`data` 和 session 文件。源码仓库目录中的 EXE 仍可通过“同步更新”快进 Git 仓库。
 
 EXE 已包含 Python 和运行依赖。已有本地项目可将 EXE 放在 `open-account-manager.bat` 旁边，继续使用现有账号配置；BAT 启动方式仍然保留。
 
@@ -55,9 +55,9 @@ Copy-Item .env.example .env
 | 使用方式 | 如何更新 |
 | --- | --- |
 | Git 项目中的 BAT / EXE | 停止监听，点击“检查更新”或“同步更新”，完成后重启工作台。 |
-| 单独使用 EXE | 更新按钮打开 Releases；退出程序后替换 EXE，保留旁边的配置与数据目录。 |
+| 单独使用 EXE | 启动后自动检查公开 Release；在应用内确认并更新，完成后自动重启。 |
 
-Git 更新保留本地配置；存在未提交的代码或分支分歧时会停止并提示。EXE 的内置依赖发生变化时，需要下载新版 EXE。
+Git 更新保留本地配置；存在未提交的代码或分支分歧时会停止并提示。EXE 更新只替换程序文件，保留本机配置和数据。匿名在线更新要求 GitHub 仓库与 Release 公开；否则 GitHub 会对未登录的其他电脑返回 404。
 
 ## 本地数据与隐私
 

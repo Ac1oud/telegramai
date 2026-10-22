@@ -33,10 +33,11 @@ def _version_key(tag: str) -> tuple[int, ...]:
 
 
 def _opener():
-    proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
-    if proxy:
-        return urllib.request.build_opener(urllib.request.ProxyHandler({"https": proxy}))
-    return urllib.request.build_opener()
+    # urllib discovers environment and Windows Internet Settings proxies.
+    proxies = urllib.request.getproxies()
+    if "https" not in proxies and "http" in proxies:
+        proxies["https"] = proxies["http"]
+    return urllib.request.build_opener(urllib.request.ProxyHandler(proxies))
 
 
 def _request(url: str, *, binary: bool = False) -> bytes:
@@ -52,6 +53,12 @@ def _request(url: str, *, binary: bool = False) -> bytes:
             if final_host not in {"api.github.com", "github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"}:
                 raise ReleaseUpdateError("GitHub 更新下载跳转到了不受信任的地址。")
             return response.read()
+    except urllib.error.HTTPError as exc:
+        if exc.code in {401, 403, 404}:
+            raise ReleaseUpdateError(
+                "GitHub 更新不可访问（HTTP " + str(exc.code) + "）。请确认 telegramai 仓库和 Release 已设为公开。"
+            ) from exc
+        raise ReleaseUpdateError(f"GitHub 更新服务返回 HTTP {exc.code}，请稍后重试。") from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise ReleaseUpdateError("连接 GitHub 更新服务失败，请检查网络后重试。") from exc
 
@@ -144,12 +151,17 @@ def launch_replacement(executable: Path, staging: Path) -> None:
     script = r'''param([int]$ParentId, [string]$Executable, [string]$Staging, [string]$Backup)
 $ErrorActionPreference = 'Stop'
 while (Get-Process -Id $ParentId -ErrorAction SilentlyContinue) { Start-Sleep -Milliseconds 250 }
+$NewProcess = $null
 try {
     if (Test-Path -LiteralPath $Backup) { Remove-Item -LiteralPath $Backup -Force }
     Move-Item -LiteralPath $Executable -Destination $Backup
     Move-Item -LiteralPath $Staging -Destination $Executable
-    Start-Process -FilePath $Executable -ArgumentList '--update-complete'
+    $NewProcess = Start-Process -FilePath $Executable -ArgumentList '--update-complete' -PassThru
+    Start-Sleep -Seconds 12
+    $NewProcess.Refresh()
+    if ($NewProcess.HasExited) { throw 'Updated application exited during startup.' }
 } catch {
+    if ($NewProcess -and -not $NewProcess.HasExited) { Stop-Process -Id $NewProcess.Id -Force -ErrorAction SilentlyContinue }
     if (Test-Path -LiteralPath $Backup) {
         if (Test-Path -LiteralPath $Executable) { Remove-Item -LiteralPath $Executable -Force }
         Move-Item -LiteralPath $Backup -Destination $Executable
