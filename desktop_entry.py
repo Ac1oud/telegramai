@@ -16,7 +16,7 @@ class ProjectModules(importlib.abc.MetaPathFinder):
         self.root = root
 
     def find_spec(self, fullname, path=None, target=None):
-        if fullname in {"main", "account_manager", "ui_effects", "project_updater", "app_runtime", "version", "gui_worker", "image_references"}:
+        if fullname in {"main", "account_manager", "ui_effects", "project_updater", "release_updater", "app_runtime", "version", "gui_worker", "image_references"}:
             source = self.root / f"{fullname}.py"
             if source.is_file():
                 return importlib.util.spec_from_file_location(fullname, source)
@@ -83,6 +83,13 @@ def run() -> None:
                 except (EOFError, KeyboardInterrupt):
                     pass
         return
+
+    if "--update-complete" in sys.argv[1:]:
+        sys.argv.remove("--update-complete")
+        os.environ["TELEGRAMAI_UPDATE_COMPLETE"] = "1"
+    if "--update-failed" in sys.argv[1:]:
+        sys.argv.remove("--update-failed")
+        os.environ["TELEGRAMAI_UPDATE_FAILED"] = "1"
 
     from app_runtime import FROZEN, ensure_local_config
     from account_manager import run_desktop

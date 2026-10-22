@@ -6,7 +6,7 @@
 
 一个在本机运行的 Telegram 多账号 AI 助手。通过桌面工作台管理账号、登录会话和群组权限，让 AI 在指定群组中响应提及与回复。
 
-**26.1.0 alpha** · Windows 桌面版 · Python / Telethon
+**26.1.1 alpha** · Windows 桌面版 · Python / Telethon
 
 [下载 Windows EXE](https://github.com/Ac1oud/telegramai/releases) · [完整使用指南](docs/usage.md)
 
@@ -30,6 +30,8 @@
 3. 新建账号并登录，设置群白名单；在“生图设置”中选择当前账号的生图开关，然后可使用“启动全部监听”同时运行多个账号。
 
 `TelegramAI.exe` 为无终端版，运行与登录使用图形操作窗口，不打开 CMD。`TelegramAI-console.exe` 为命令行版，保留终端输出及交互，便于排错。两者各自包含完整依赖，可单独使用。
+
+应用启动时会在后台检查 GitHub Releases。发现新版后可选择稍后提醒或立即更新；应用会下载对应 EXE、校验 SHA-256、替换并重启。更新不会覆盖同目录下的 `.env`、`profiles`、`data` 和 session 文件。源码版仍可通过“同步更新”快进 Git 仓库。
 
 EXE 已包含 Python 和运行依赖。已有本地项目可将 EXE 放在 `open-account-manager.bat` 旁边，继续使用现有账号配置；BAT 启动方式仍然保留。
 

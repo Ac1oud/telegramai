@@ -17,6 +17,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from urllib.parse import urlparse
 
 from project_updater import GitUpdater, UpdateError, UpdateStatus
+from release_updater import ReleaseUpdateError, check_latest, download_update, launch_replacement, snooze
 from ui_effects import AnimatedButton, Animator, animate_window_open, animate_window_close, mix_color
 from app_runtime import ROOT, RESOURCE_ROOT, FROZEN, SOURCE_MODE, CONSOLE_MODE
 from version import VERSION
@@ -84,6 +85,9 @@ class AccountManager(tk.Tk):
         self.profile_names: list[str] = []
         self.update_busy = False
         self.update_results: queue.Queue[UpdateStatus | Exception] = queue.Queue()
+        self.release_results: queue.Queue[dict | Exception | None] = queue.Queue()
+        self.release_busy = False
+        self.release_manual = False
         self.update_buttons: list[ttk.Button] = []
         self.protocol("WM_DELETE_WINDOW", self._close_manager)
         self._configure_styles()
@@ -93,6 +97,9 @@ class AccountManager(tk.Tk):
         self._build_ui()
         self.refresh_profiles()
         self.after(1200, self._refresh_process_status)
+        if FROZEN and not SOURCE_MODE:
+            self.after(1600, self._show_update_success_if_requested)
+            self.after(2200, self._check_release_on_startup)
 
     def _configure_styles(self) -> None:
         """统一窗口配色与控件状态，让原生 Tk 界面更清爽。"""
@@ -303,7 +310,7 @@ class AccountManager(tk.Tk):
             ("生图设置", self.manage_image_settings),
             ("语言模型管理", self.manage_model_settings),
             ("检查更新", self.check_project_updates),
-            ("同步更新", self.sync_project_updates),
+            ("在线更新" if FROZEN and not SOURCE_MODE else "同步更新", self.sync_project_updates),
         ]
         manage_buttons = ttk.Frame(manage_card, style="CardInner.TFrame")
         manage_buttons.pack(fill="x")
@@ -313,7 +320,7 @@ class AccountManager(tk.Tk):
             button.grid(
                 row=index // 4, column=index % 4, sticky="ew", padx=3, pady=3
             )
-            if label in {"检查更新", "同步更新"}:
+            if label in {"检查更新", "同步更新", "在线更新"}:
                 self.update_buttons.append(button)
         for column in range(4):
             manage_buttons.columnconfigure(column, weight=1)
@@ -556,11 +563,7 @@ class AccountManager(tk.Tk):
         if self.update_busy:
             return
         if FROZEN and not SOURCE_MODE:
-            messagebox.showinfo(
-                "下载 EXE 更新", f"当前版本：{VERSION}\n\n将打开 GitHub Releases。下载新版 TelegramAI.exe，关闭程序后替换原文件；旁边的账号配置和会话继续保留。",
-                parent=self,
-            )
-            webbrowser.open("https://github.com/Ac1oud/telegramai/releases")
+            self._check_release_manually()
             return
         if sync and any(process.poll() is None for _profile, _action, process in self.child_processes):
             messagebox.showwarning("请先停止监听", "同步前请先停止所有监听或登录终端（包括从其他窗口启动的进程）。")
@@ -598,6 +601,142 @@ class AccountManager(tk.Tk):
         text = result.message()
         self.status.set(text.split("\n")[0])
         messagebox.showinfo("同步完成" if result.updated else "检查完成", text)
+
+    def _show_update_success_if_requested(self) -> None:
+        if os.environ.pop("TELEGRAMAI_UPDATE_COMPLETE", None):
+            for path in (
+                Path(sys.executable).with_name(Path(sys.executable).name + ".previous"),
+                Path(sys.executable).with_name("TelegramAI-update.ps1"),
+            ):
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            messagebox.showinfo("更新完成", f"Telegram AI 已成功更新到 {VERSION}。", parent=self)
+        if os.environ.pop("TELEGRAMAI_UPDATE_FAILED", None):
+            messagebox.showerror("更新未完成", "新版无法启动，已恢复到原版本。请稍后重试。", parent=self)
+
+    def _check_release_on_startup(self) -> None:
+        if self.release_busy:
+            return
+        self.release_busy = True
+
+        def worker() -> None:
+            try:
+                self.release_results.put(check_latest())
+            except Exception as exc:
+                self.release_results.put(exc)
+
+        threading.Thread(target=worker, daemon=True).start()
+        self.after(120, self._poll_release_check)
+
+    def _check_release_manually(self) -> None:
+        if self.release_busy:
+            return
+        self.release_manual = True
+        self.status.set("正在检查应用更新…")
+        self._check_release_on_startup()
+
+    def _poll_release_check(self) -> None:
+        try:
+            result = self.release_results.get_nowait()
+        except queue.Empty:
+            self.after(120, self._poll_release_check)
+            return
+        self.release_busy = False
+        manual = self.release_manual
+        self.release_manual = False
+        if isinstance(result, Exception):
+            self.status.set("应用更新检查失败")
+            if manual:
+                messagebox.showerror("检查更新失败", str(result), parent=self)
+            return
+        if not result:
+            self.status.set("应用已是最新版本")
+            if manual:
+                messagebox.showinfo("检查更新", f"当前版本 {VERSION} 已是最新版本。", parent=self)
+            return
+        self.status.set(f"发现新版本：{result.get('name') or result.get('tag_name')}")
+        self._prompt_release_update(result)
+
+    def _prompt_release_update(self, release: dict) -> None:
+        tag = str(release.get("tag_name", "未知版本"))
+        dialog = tk.Toplevel(self)
+        dialog.title("发现新版本")
+        dialog.transient(self)
+        dialog.resizable(False, False)
+        body = ttk.Frame(dialog, padding=18)
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text=f"发现 Telegram AI 新版本\n{release.get('name') or tag}", justify="left").pack(anchor="w")
+        notes = str(release.get("body") or "")[:1200].strip()
+        if notes:
+            ttk.Label(body, text=notes, justify="left", wraplength=420).pack(anchor="w", pady=(10, 12))
+        else:
+            ttk.Label(body, text=f"当前版本：{VERSION}").pack(anchor="w", pady=(8, 12))
+        buttons = ttk.Frame(body)
+        buttons.pack(fill="x")
+
+        def later() -> None:
+            try:
+                snooze(tag)
+            except ReleaseUpdateError as exc:
+                messagebox.showerror("稍后提醒失败", str(exc), parent=dialog)
+                return
+            dialog.destroy()
+            self.status.set("已暂缓此版本更新 24 小时")
+
+        def update_now() -> None:
+            dialog.destroy()
+            self._download_release_update(release)
+
+        ttk.Button(buttons, text="稍后提醒我", command=later).pack(side="right")
+        ttk.Button(buttons, text="立即更新", style="Primary.TButton", command=update_now).pack(side="right", padx=(0, 8))
+        dialog.protocol("WM_DELETE_WINDOW", later)
+        dialog.grab_set()
+
+    def _download_release_update(self, release: dict) -> None:
+        if any(process.poll() is None for _profile, _action, process in self.child_processes):
+            messagebox.showwarning("请先停止监听", "应用更新前请先停止此窗口启动的监听或登录进程，再重新检查更新。", parent=self)
+            return
+        if self.release_busy:
+            return
+        self.release_busy = True
+        for button in self.update_buttons:
+            button.state(["disabled"])
+        self.status.set("正在下载并校验更新…")
+        results: queue.Queue[Path | Exception] = queue.Queue()
+
+        def worker() -> None:
+            try:
+                results.put(download_update(release, Path(sys.executable).resolve()))
+            except Exception as exc:
+                results.put(exc)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+        def poll_download() -> None:
+            try:
+                result = results.get_nowait()
+            except queue.Empty:
+                self.after(120, poll_download)
+                return
+            self.release_busy = False
+            for button in self.update_buttons:
+                button.state(["!disabled"])
+            if isinstance(result, Exception):
+                text = str(result) if isinstance(result, ReleaseUpdateError) else "下载更新失败，请稍后重试。"
+                self.status.set(text)
+                messagebox.showerror("更新失败", text, parent=self)
+                return
+            try:
+                launch_replacement(Path(sys.executable).resolve(), result)
+            except ReleaseUpdateError as exc:
+                self.status.set(str(exc))
+                messagebox.showerror("无法安装更新", str(exc), parent=self)
+                return
+            self.destroy()
+
+        self.after(120, poll_download)
 
     @staticmethod
     def get_display_name(profile: str) -> str:
