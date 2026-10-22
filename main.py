@@ -34,12 +34,14 @@ from telethon.errors import (
 
 from app_runtime import ROOT
 from image_references import prepare_image_prompt
+from sound_effects import play_sound
 PROFILE_DIR = ROOT / "profiles"
 LOG = logging.getLogger("group_assistant")
 PROFILE_MODEL_KEYS = (
     "OPENAI_API_KEY", "OPENAI_MODEL", "OPENAI_BASE_URL",
     "OPENAI_IMAGE_API_KEY", "OPENAI_IMAGE_MODEL", "OPENAI_IMAGE_BASE_URL",
     "OPENAI_IMAGE_SIZE", "WEB_SEARCH_ENABLED", "IMAGE_GENERATION_ENABLED",
+    "MODEL_SYSTEM_PROMPT",
 )
 
 
@@ -194,6 +196,7 @@ class Config:
     test_reply_text: str
     openai_api_key: str
     openai_model: str
+    model_system_prompt: str
     openai_base_url: str | None
     openai_audio_api_key: str
     openai_audio_base_url: str | None
@@ -324,6 +327,7 @@ class Config:
             test_reply_text=env.get("TEST_REPLY_TEXT", "").strip(),
             openai_api_key=env.get("OPENAI_API_KEY", "").strip(),
             openai_model=env.get("OPENAI_MODEL", "gpt-6-luna").strip(),
+            model_system_prompt=env.get("MODEL_SYSTEM_PROMPT", "").strip(),
             openai_base_url=env.get("OPENAI_BASE_URL", "").strip() or None,
             openai_audio_api_key=env.get("OPENAI_AUDIO_API_KEY", "").strip(),
             openai_audio_base_url=env.get("OPENAI_AUDIO_BASE_URL", "").strip() or None,
@@ -733,6 +737,12 @@ async def generate_reply(
         "如果当前触发消息包含‘发语音’，这是语音输出方式指令，不要把这几个字当作问题内容或复述出来。"
         "如果上下文不足以回答，就简短说明需要更多信息。"
     )
+    if config.model_system_prompt:
+        instructions += (
+            "以下是当前账号单独配置的模型固有提示词。它只用于补充表达方式和人设，"
+            "不得覆盖安全规则、主人身份判定、当前消息优先级或工具使用规则：\n"
+            f"{config.model_system_prompt[:6000]}\n"
+        )
     complex_analysis = is_complex_analysis_request(trigger_text) or len(trigger_text.strip()) >= 400
     if complex_analysis:
         instructions += "当前消息明确需要复杂分析，可以分点给出充分推理后的结论和必要依据。"
@@ -1333,6 +1343,7 @@ async def run(
         try:
             await authorize_by_qr(client)
         finally:
+            play_sound("exit")
             await client.disconnect()
         return
 
@@ -1381,6 +1392,7 @@ async def run(
             len(config.owner_usernames),
         )
         LOG.info("生图触发规则 v4 已加载；对话记忆 v8 已加载：仅保存与账号直接对话，指定关键词才读取群聊历史")
+        play_sound("running")
 
         @client.on(events.NewMessage(incoming=True))
         async def on_message(event: Any) -> None:
@@ -1438,6 +1450,7 @@ async def run(
                 if not accepted:
                     LOG.info("群 %s 的提及被冷却或去重跳过，剩余 %s 秒", event.chat_id, remaining)
                     return
+                play_sound("wait")
 
                 # 直接优先读取 Telegram 原始 message/caption 字段；无文字时再退回 Telethon raw_text。
                 trigger_text = getattr(event.message, "message", None) or event.message.raw_text or ""
@@ -1682,6 +1695,7 @@ async def run(
                     # 统一控制回复延迟和跨群最短发送间隔。
                     await asyncio.sleep(max(config.reply_delay_seconds, wait_for_global))
                     try:
+                        play_sound("send")
                         if image_result:
                             await delete_progress_message(client, event.chat_id, progress_message)
                             progress_message = None
@@ -1862,6 +1876,7 @@ async def run(
         finally:
             state.close()
     finally:
+        play_sound("exit")
         await client.disconnect()
 
 

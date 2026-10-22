@@ -19,6 +19,7 @@ from urllib.parse import urlparse
 from project_updater import GitUpdater, UpdateError, UpdateStatus
 from release_updater import ReleaseUpdateError, check_latest, download_update, launch_replacement, snooze
 from ui_effects import AnimatedButton, Animator, animate_window_open, animate_window_close, mix_color
+from sound_effects import play_sound
 from app_runtime import ROOT, RESOURCE_ROOT, FROZEN, SOURCE_MODE, CONSOLE_MODE
 from version import VERSION
 
@@ -33,6 +34,7 @@ PROFILE_MODEL_KEYS = (
     "OPENAI_API_KEY", "OPENAI_MODEL", "OPENAI_BASE_URL",
     "OPENAI_IMAGE_API_KEY", "OPENAI_IMAGE_MODEL", "OPENAI_IMAGE_BASE_URL",
     "OPENAI_IMAGE_SIZE", "WEB_SEARCH_ENABLED", "IMAGE_GENERATION_ENABLED",
+    "MODEL_SYSTEM_PROMPT",
 )
 
 
@@ -75,6 +77,7 @@ def python_console_executable() -> str:
 class AccountManager(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
+        self._show_startup_splash()
         animate_window_open(self)
         self.title(f"Telegram AI · {VERSION}")
         self.geometry("820x730")
@@ -96,10 +99,45 @@ class AccountManager(tk.Tk):
         self._load_app_icon()
         self._build_ui()
         self.refresh_profiles()
+        self.after(900, self._dismiss_startup_splash)
         self.after(1200, self._refresh_process_status)
         if FROZEN and not SOURCE_MODE:
             self.after(1600, self._show_update_success_if_requested)
             self.after(2200, self._check_release_on_startup)
+
+    def _show_startup_splash(self) -> None:
+        """Use a short scale-free loading panel while the main window is built."""
+        self._startup_splash = tk.Toplevel(self)
+        splash = self._startup_splash
+        splash.overrideredirect(True)
+        splash.configure(background="#F7F5FA")
+        splash.geometry("300x150")
+        splash.withdraw()
+        frame = tk.Frame(splash, background="#F7F5FA")
+        frame.pack(fill="both", expand=True)
+        tk.Label(frame, text="Telegram AI", background="#F7F5FA", foreground="#342B43",
+                 font=("Microsoft YaHei UI", 20, "bold")).pack(pady=(30, 8))
+        self._splash_status = tk.StringVar(value="正在启动")
+        tk.Label(frame, textvariable=self._splash_status, background="#F7F5FA", foreground="#81768E",
+                 font=("Microsoft YaHei UI", 9)).pack()
+        splash.update_idletasks()
+        x = (splash.winfo_screenwidth() - splash.winfo_width()) // 2
+        y = (splash.winfo_screenheight() - splash.winfo_height()) // 2
+        splash.geometry(f"+{x}+{y}")
+        splash.deiconify()
+        self._splash_phase = 0
+        def tick() -> None:
+            if not getattr(self, "_startup_splash", None) or not splash.winfo_exists():
+                return
+            self._splash_phase = (self._splash_phase + 1) % 4
+            self._splash_status.set("正在启动" + "." * self._splash_phase)
+            splash.after(180, tick)
+        splash.after(180, tick)
+
+    def _dismiss_startup_splash(self) -> None:
+        splash = getattr(self, "_startup_splash", None)
+        if splash is not None and splash.winfo_exists():
+            splash.destroy()
 
     def _configure_styles(self) -> None:
         """统一窗口配色与控件状态，让原生 Tk 界面更清爽。"""
@@ -470,6 +508,7 @@ class AccountManager(tk.Tk):
                 messagebox.showerror("保存生图设置失败", str(exc), parent=dialog)
                 return
             self.status.set("生图设置已保存；重启监听后生效。")
+            play_sound("sure")
             animate_window_close(dialog)
 
         buttons = ttk.Frame(body)
@@ -492,8 +531,8 @@ class AccountManager(tk.Tk):
 
         dialog = self._new_dialog()
         dialog.title("语言模型管理")
-        dialog.geometry("620x350")
-        dialog.minsize(560, 320)
+        dialog.geometry("620x470")
+        dialog.minsize(560, 430)
         dialog.transient(self)
         dialog.grab_set()
         body = ttk.Frame(dialog, padding=16)
@@ -521,11 +560,20 @@ class AccountManager(tk.Tk):
         ttk.Checkbutton(body, text="清除已保存的模型 API Key", variable=clear_key).grid(
             row=5, column=1, sticky="w", pady=(0, 6)
         )
+        ttk.Label(body, text="模型固有提示词 / 人设").grid(row=6, column=0, sticky="nw", pady=6)
+        prompt_text = tk.Text(body, height=5, width=52, wrap="word", relief="solid", borderwidth=1)
+        prompt_text.grid(row=6, column=1, sticky="nsew", pady=6)
+        prompt_text.insert("1.0", str(values.get("MODEL_SYSTEM_PROMPT") or ""))
+        ttk.Label(body, text="只作用于当前账号；留空则使用内置角色设定。", wraplength=420).grid(
+            row=7, column=1, sticky="w", pady=(0, 6)
+        )
         body.columnconfigure(1, weight=1)
+        body.rowconfigure(6, weight=1)
 
         def save() -> None:
             model = model_var.get().strip()
             base_url = base_var.get().strip()
+            system_prompt = prompt_text.get("1.0", "end-1c").strip()
             parsed_url = urlparse(base_url) if base_url else None
             if not model:
                 messagebox.showerror("缺少模型名称", "请填写服务商提供的模型名称。", parent=dialog)
@@ -534,7 +582,7 @@ class AccountManager(tk.Tk):
                 messagebox.showerror("URL 格式错误", "请输入完整的 http:// 或 https:// API Base URL。", parent=dialog)
                 return
             try:
-                updates = {"OPENAI_MODEL": model, "OPENAI_BASE_URL": base_url}
+                updates = {"OPENAI_MODEL": model, "OPENAI_BASE_URL": base_url, "MODEL_SYSTEM_PROMPT": system_prompt}
                 entered_key = key_var.get().strip()
                 if clear_key.get():
                     updates["OPENAI_API_KEY"] = ""
@@ -545,10 +593,11 @@ class AccountManager(tk.Tk):
                 messagebox.showerror("保存语言模型设置失败", str(exc), parent=dialog)
                 return
             self.status.set("语言模型设置已保存；重启监听后生效。")
+            play_sound("sure")
             animate_window_close(dialog)
 
         buttons = ttk.Frame(body)
-        buttons.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(14, 0))
+        buttons.grid(row=8, column=0, columnspan=2, sticky="ew", pady=(14, 0))
         AnimatedButton(buttons, text="保存设置", style="Primary.TButton", command=save).pack(side="right")
         AnimatedButton(buttons, text="取消", command=lambda: animate_window_close(dialog)).pack(side="right", padx=(0, 8))
 
@@ -1146,6 +1195,7 @@ class AccountManager(tk.Tk):
                 text = text.rstrip() + "\n" + line + "\n"
             profile_file.write_text(text, encoding="utf-8")
             self.status.set(f"已保存 {profile} 的群白名单，共 {len(chat_ids)} 个群；重启监听后生效。")
+            play_sound("sure")
             animate_window_close(dialog)
 
         fetch_status = tk.StringVar(value="可从当前账号 session 获取群名称和 ID。")
@@ -1531,6 +1581,7 @@ class AccountManager(tk.Tk):
             self.status.set(
                 f"已保存 {profile} 用户名单：可触发 {len(sender_ids)} 人，主人 {len(owner_ids)} 个 ID / {len(owner_usernames)} 个用户名；已对监听立即生效。"
             )
+            play_sound("sure")
             animate_window_close(dialog)
 
         AnimatedButton(controls, text="保存两份名单", style="Primary.TButton", command=save_user_lists).pack(side="right")

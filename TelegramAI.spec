@@ -25,6 +25,8 @@ resources = [
     (str(root / ".env.example"), "."),
     (certifi.where(), "."),
 ]
+for sound_file in sorted((root / "sounds").glob("*.wav")):
+    resources.append((str(sound_file), "sounds"))
 # The bundled Python runtime loads this companion certificate file while
 # constructing SSLContext, before loading the public CA bundle.
 runtime_ca = Path(ssl.__file__).with_name("codex-rejected-cas.pem")
@@ -32,7 +34,7 @@ if runtime_ca.is_file():
     resources.append((str(runtime_ca), "."))
 a = Analysis([str(root / "desktop_entry.py")], pathex=[str(root)],
     binaries=[], datas=resources,
-    hiddenimports=["account_manager", "main", "ui_effects", "project_updater", "release_updater", "app_runtime", "version", "gui_worker", "image_references"],
+    hiddenimports=["account_manager", "main", "ui_effects", "project_updater", "release_updater", "app_runtime", "version", "gui_worker", "image_references", "sound_effects"],
     hookspath=[], runtime_hooks=[], excludes=[], noarchive=False,
 )
 pyz = PYZ(a.pure)
