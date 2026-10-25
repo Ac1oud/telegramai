@@ -349,6 +349,7 @@ class AccountManager(tk.Tk):
             ("删除账号配置", self.delete_profile),
             ("生图设置", self.manage_image_settings),
             ("语言模型管理", self.manage_model_settings),
+            ("全局人设/发言规则", self.manage_global_rules),
             ("语音 API 管理", self.manage_voice_settings),
             ("私信/自提及设置", self.manage_trigger_settings),
             ("检查更新", self.check_project_updates),
@@ -662,6 +663,57 @@ class AccountManager(tk.Tk):
             animate_window_close(dialog)
         buttons = ttk.Frame(body)
         buttons.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(14, 0))
+        AnimatedButton(buttons, text="保存设置", style="Primary.TButton", command=save).pack(side="right")
+        AnimatedButton(buttons, text="取消", command=lambda: animate_window_close(dialog)).pack(side="right", padx=(0, 8))
+
+    def manage_global_rules(self) -> None:
+        """Edit shared persona/rules defaults stored in the root .env file."""
+        from dotenv import dotenv_values
+
+        env_file = ROOT / ".env"
+        try:
+            values = dotenv_values(env_file, interpolate=False) if env_file.exists() else {}
+        except (OSError, UnicodeError, ValueError) as exc:
+            messagebox.showerror("读取全局规则失败", str(exc))
+            return
+
+        dialog = self._new_dialog()
+        dialog.title("全局人设与发言规则")
+        dialog.geometry("700x620")
+        dialog.minsize(620, 520)
+        dialog.transient(self)
+        dialog.grab_set()
+        body = ttk.Frame(dialog, padding=16)
+        body.pack(fill="both", expand=True)
+        ttk.Label(
+            body,
+            text="以下内容作为所有账号共用的基础设定；账号内单独填写的人设与规则会追加在后，作为该账号的个性化补充。",
+            wraplength=640,
+        ).pack(anchor="w", pady=(0, 12))
+        ttk.Label(body, text="全局人设 / 固有提示词").pack(anchor="w")
+        persona = tk.Text(body, height=10, wrap="word", relief="solid", borderwidth=1)
+        persona.pack(fill="both", expand=True, pady=(4, 12))
+        persona.insert("1.0", str(values.get("MODEL_PERSONA_PROMPT") or ""))
+        ttk.Label(body, text="全局统一发言规则").pack(anchor="w")
+        rules = tk.Text(body, height=10, wrap="word", relief="solid", borderwidth=1)
+        rules.pack(fill="both", expand=True, pady=(4, 8))
+        rules.insert("1.0", str(values.get("GLOBAL_SPEAKING_RULES") or ""))
+        buttons = ttk.Frame(body)
+        buttons.pack(fill="x", pady=(10, 0))
+
+        def save() -> None:
+            try:
+                _write_profile_settings(env_file, {
+                    "MODEL_PERSONA_PROMPT": persona.get("1.0", "end-1c").strip(),
+                    "GLOBAL_SPEAKING_RULES": rules.get("1.0", "end-1c").strip(),
+                })
+            except OSError as exc:
+                messagebox.showerror("保存全局规则失败", str(exc), parent=dialog)
+                return
+            self.status.set("全局人设与发言规则已保存；重启监听后对所有账号生效。")
+            play_sound("sure")
+            animate_window_close(dialog)
+
         AnimatedButton(buttons, text="保存设置", style="Primary.TButton", command=save).pack(side="right")
         AnimatedButton(buttons, text="取消", command=lambda: animate_window_close(dialog)).pack(side="right", padx=(0, 8))
 
