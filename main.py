@@ -41,7 +41,9 @@ PROFILE_MODEL_KEYS = (
     "OPENAI_API_KEY", "OPENAI_MODEL", "OPENAI_BASE_URL",
     "OPENAI_IMAGE_API_KEY", "OPENAI_IMAGE_MODEL", "OPENAI_IMAGE_BASE_URL",
     "OPENAI_IMAGE_SIZE", "WEB_SEARCH_ENABLED", "IMAGE_GENERATION_ENABLED",
-    "MODEL_SYSTEM_PROMPT",
+    "MODEL_SYSTEM_PROMPT", "MODEL_PERSONA_PROMPT", "ACCOUNT_SPEAKING_RULES",
+    "OPENAI_AUDIO_API_KEY", "OPENAI_AUDIO_BASE_URL", "OPENAI_SPEECH_MODEL", "VOICE_REPLY_VOICE",
+    "VOICE_REPLY_ENABLED", "PRIVATE_REPLY_ENABLED", "SELF_MENTION_ENABLED",
 )
 
 
@@ -197,6 +199,9 @@ class Config:
     openai_api_key: str
     openai_model: str
     model_system_prompt: str
+    model_persona_prompt: str
+    account_speaking_rules: str
+    global_speaking_rules: str
     openai_base_url: str | None
     openai_audio_api_key: str
     openai_audio_base_url: str | None
@@ -207,6 +212,8 @@ class Config:
     image_generation_enabled: bool
     web_search_enabled: bool
     voice_reply_enabled: bool
+    private_reply_enabled: bool
+    self_mention_enabled: bool
     speech_model: str
     speech_voice: str
     allowed_sender_ids: frozenset[int]
@@ -328,6 +335,9 @@ class Config:
             openai_api_key=env.get("OPENAI_API_KEY", "").strip(),
             openai_model=env.get("OPENAI_MODEL", "gpt-6-luna").strip(),
             model_system_prompt=env.get("MODEL_SYSTEM_PROMPT", "").strip(),
+            model_persona_prompt=env.get("MODEL_PERSONA_PROMPT", "").strip(),
+            account_speaking_rules=env.get("ACCOUNT_SPEAKING_RULES", "").strip(),
+            global_speaking_rules=env.get("GLOBAL_SPEAKING_RULES", "").strip(),
             openai_base_url=env.get("OPENAI_BASE_URL", "").strip() or None,
             openai_audio_api_key=env.get("OPENAI_AUDIO_API_KEY", "").strip(),
             openai_audio_base_url=env.get("OPENAI_AUDIO_BASE_URL", "").strip() or None,
@@ -338,6 +348,8 @@ class Config:
             image_generation_enabled=env.get("IMAGE_GENERATION_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"},
             web_search_enabled=env.get("WEB_SEARCH_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"},
             voice_reply_enabled=env.get("VOICE_REPLY_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"},
+            private_reply_enabled=env.get("PRIVATE_REPLY_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"},
+            self_mention_enabled=env.get("SELF_MENTION_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"},
             speech_model=env.get("OPENAI_SPEECH_MODEL", "gpt-4o-mini-tts").strip(),
             speech_voice=env.get("VOICE_REPLY_VOICE", "alloy").strip(),
             allowed_sender_ids=allowed_sender_ids,
@@ -549,6 +561,9 @@ async def get_reply_image_data(client: TelegramClient, message: Any) -> tuple[st
 
 def choose_reasoning_effort(trigger_text: str) -> str:
     """闲聊默认快速处理；明确的复杂分析请求才使用高推理强度。"""
+    if chat_history_mode(trigger_text) == "group_summary":
+        # 群聊总结必须只返回可发送的摘要，避免中转服务将 reasoning 混入文本。
+        return "low"
     complex_request = is_complex_analysis_request(trigger_text)
     if complex_request or len(trigger_text.strip()) >= 400:
         return "high"
@@ -609,6 +624,29 @@ def split_progressive_reply(text: str, threshold: int = 50) -> tuple[str, str] |
         split_at = midpoint
         first, remainder = text[:split_at].rstrip(), text[split_at:].lstrip()
     return (first, remainder) if first and remainder else None
+
+
+def assistant_final_text(response: Any, *, strict: bool = False) -> str:
+    """Extract only assistant final-message text; never expose reasoning/tool items."""
+    def field(value: Any, name: str, default: Any = None) -> Any:
+        if isinstance(value, dict):
+            return value.get(name, default)
+        return getattr(value, name, default)
+
+    parts: list[str] = []
+    for item in field(response, "output", None) or []:
+        if field(item, "type") != "message" or field(item, "role") != "assistant":
+            continue
+        for content in field(item, "content", None) or []:
+            if field(content, "type") == "output_text":
+                text = str(field(content, "text", "") or "").strip()
+                if text:
+                    parts.append(text)
+    if parts:
+        return "\n".join(parts).strip()
+    if strict:
+        return ""
+    return str(field(response, "output_text", "") or "").strip()
 
 
 def is_forbidden_title_request(text: str, *, sender_is_owner: bool = False) -> bool:
@@ -745,6 +783,12 @@ async def generate_reply(
             "仅不得覆盖程序安全规则、主人身份判定、当前消息优先级或工具使用规则：\n"
             f"{config.model_system_prompt[:6000]}\n"
         )
+    if config.model_persona_prompt:
+        instructions += f"【当前账号人设】\n{config.model_persona_prompt[:6000]}\n"
+    if config.global_speaking_rules:
+        instructions += f"【全局统一发言规则】\n{config.global_speaking_rules[:6000]}\n"
+    if config.account_speaking_rules:
+        instructions += f"【当前账号发言规则】\n{config.account_speaking_rules[:6000]}\n"
     complex_analysis = is_complex_analysis_request(trigger_text) or len(trigger_text.strip()) >= 400
     if complex_analysis:
         instructions += "当前消息明确需要复杂分析，可以分点给出充分推理后的结论和必要依据。"
@@ -840,7 +884,8 @@ async def generate_reply(
                 "并只回答当前文字消息中可确定的部分。"
             )
             response = await client.responses.create(**request)
-        reply_text = (response.output_text or "").strip()
+        # 总结模式拒绝 SDK 聚合字段，防止中转端将内部 reasoning 混入可发送文本。
+        reply_text = assistant_final_text(response, strict=context_mode == "group_summary")
         if not reply_text:
             raise RuntimeError("OpenAI API 返回了空文本")
         if contains_code_artifact(reply_text):
@@ -1400,8 +1445,12 @@ async def run(
         async def on_message(event: Any) -> None:
             nonlocal last_send_at, telegram_backoff_until
             try:
-                # 只处理群组白名单中的新消息，忽略私聊和其他群组。
-                if not event.is_group or event.chat_id not in config.allowed_chat_ids:
+                # 私信和 @自己可按账号配置启用；群聊仍必须位于该账号白名单。
+                is_private = bool(getattr(event, "is_private", False))
+                if is_private:
+                    if not config.private_reply_enabled:
+                        return
+                elif not event.is_group or event.chat_id not in config.allowed_chat_ids:
                     return
                 if time.monotonic() < telegram_backoff_until:
                     LOG.info("Telegram FloodWait 冷却中，跳过群 %s 的本次触发", event.chat_id)
@@ -1412,7 +1461,9 @@ async def run(
                 reply_to_message = None
                 if event.message.reply_to_msg_id:
                     reply_to_message = await event.get_reply_message()
-                if not is_mentioned(event.message, account.id, username, reply_to_message):
+                if not is_private and not config.self_mention_enabled:
+                    return
+                if not is_private and not is_mentioned(event.message, account.id, username, reply_to_message):
                     return
                 permissions = load_identity_permissions(profile, config)
                 sender_id = event.sender_id

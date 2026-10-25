@@ -35,6 +35,8 @@ PROFILE_MODEL_KEYS = (
     "OPENAI_IMAGE_API_KEY", "OPENAI_IMAGE_MODEL", "OPENAI_IMAGE_BASE_URL",
     "OPENAI_IMAGE_SIZE", "WEB_SEARCH_ENABLED", "IMAGE_GENERATION_ENABLED",
     "MODEL_SYSTEM_PROMPT",
+    "MODEL_PERSONA_PROMPT", "ACCOUNT_SPEAKING_RULES", "OPENAI_AUDIO_API_KEY", "OPENAI_AUDIO_BASE_URL",
+    "OPENAI_SPEECH_MODEL", "VOICE_REPLY_VOICE", "VOICE_REPLY_ENABLED", "PRIVATE_REPLY_ENABLED", "SELF_MENTION_ENABLED",
 )
 
 
@@ -347,6 +349,8 @@ class AccountManager(tk.Tk):
             ("删除账号配置", self.delete_profile),
             ("生图设置", self.manage_image_settings),
             ("语言模型管理", self.manage_model_settings),
+            ("语音 API 管理", self.manage_voice_settings),
+            ("私信/自提及设置", self.manage_trigger_settings),
             ("检查更新", self.check_project_updates),
             ("在线更新" if FROZEN and not SOURCE_MODE else "同步更新", self.sync_project_updates),
         ]
@@ -531,8 +535,8 @@ class AccountManager(tk.Tk):
 
         dialog = self._new_dialog()
         dialog.title("语言模型管理")
-        dialog.geometry("620x470")
-        dialog.minsize(560, 430)
+        dialog.geometry("680x650")
+        dialog.minsize(620, 580)
         dialog.transient(self)
         dialog.grab_set()
         body = ttk.Frame(dialog, padding=16)
@@ -567,13 +571,25 @@ class AccountManager(tk.Tk):
         ttk.Label(body, text="只作用于当前账号；留空则使用内置角色设定。", wraplength=420).grid(
             row=7, column=1, sticky="w", pady=(0, 6)
         )
+        ttk.Label(body, text="当前账号人设补充").grid(row=8, column=0, sticky="nw", pady=6)
+        persona_text = tk.Text(body, height=4, width=52, wrap="word", relief="solid", borderwidth=1)
+        persona_text.grid(row=8, column=1, sticky="nsew", pady=6)
+        persona_text.insert("1.0", str(values.get("MODEL_PERSONA_PROMPT") or ""))
+        ttk.Label(body, text="当前账号发言规则").grid(row=9, column=0, sticky="nw", pady=6)
+        rules_text = tk.Text(body, height=4, width=52, wrap="word", relief="solid", borderwidth=1)
+        rules_text.grid(row=9, column=1, sticky="nsew", pady=6)
+        rules_text.insert("1.0", str(values.get("ACCOUNT_SPEAKING_RULES") or ""))
         body.columnconfigure(1, weight=1)
         body.rowconfigure(6, weight=1)
+        body.rowconfigure(8, weight=1)
+        body.rowconfigure(9, weight=1)
 
         def save() -> None:
             model = model_var.get().strip()
             base_url = base_var.get().strip()
             system_prompt = prompt_text.get("1.0", "end-1c").strip()
+            persona_prompt = persona_text.get("1.0", "end-1c").strip()
+            account_rules = rules_text.get("1.0", "end-1c").strip()
             parsed_url = urlparse(base_url) if base_url else None
             if not model:
                 messagebox.showerror("缺少模型名称", "请填写服务商提供的模型名称。", parent=dialog)
@@ -582,7 +598,13 @@ class AccountManager(tk.Tk):
                 messagebox.showerror("URL 格式错误", "请输入完整的 http:// 或 https:// API Base URL。", parent=dialog)
                 return
             try:
-                updates = {"OPENAI_MODEL": model, "OPENAI_BASE_URL": base_url, "MODEL_SYSTEM_PROMPT": system_prompt}
+                updates = {
+                    "OPENAI_MODEL": model,
+                    "OPENAI_BASE_URL": base_url,
+                    "MODEL_SYSTEM_PROMPT": system_prompt,
+                    "MODEL_PERSONA_PROMPT": persona_prompt,
+                    "ACCOUNT_SPEAKING_RULES": account_rules,
+                }
                 entered_key = key_var.get().strip()
                 if clear_key.get():
                     updates["OPENAI_API_KEY"] = ""
@@ -597,7 +619,87 @@ class AccountManager(tk.Tk):
             animate_window_close(dialog)
 
         buttons = ttk.Frame(body)
-        buttons.grid(row=8, column=0, columnspan=2, sticky="ew", pady=(14, 0))
+        buttons.grid(row=10, column=0, columnspan=2, sticky="ew", pady=(14, 0))
+        AnimatedButton(buttons, text="保存设置", style="Primary.TButton", command=save).pack(side="right")
+        AnimatedButton(buttons, text="取消", command=lambda: animate_window_close(dialog)).pack(side="right", padx=(0, 8))
+
+    def manage_voice_settings(self) -> None:
+        """管理当前账号独立的语音合成 API 和语音回复开关。"""
+        profile = self.selected_profile()
+        if not profile:
+            messagebox.showinfo("未选择账号", "请先选择要配置的账号。")
+            return
+        profile_file = PROFILE_DIR / f"{profile}.env"
+        values, _ = _account_model_values(profile_file)
+        dialog = self._new_dialog()
+        dialog.title("语音 API 管理")
+        dialog.geometry("600x330")
+        dialog.transient(self)
+        dialog.grab_set()
+        body = ttk.Frame(dialog, padding=16)
+        body.pack(fill="both", expand=True)
+        enabled = tk.BooleanVar(value=str(values.get("VOICE_REPLY_ENABLED", "false")).lower() in {"1", "true", "yes", "on"})
+        ttk.Checkbutton(body, text="启用语音回复（仅在消息包含“发语音”时触发）", variable=enabled).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 12))
+        base = tk.StringVar(value=str(values.get("OPENAI_AUDIO_BASE_URL") or ""))
+        model = tk.StringVar(value=str(values.get("OPENAI_SPEECH_MODEL") or "gpt-4o-mini-tts"))
+        voice = tk.StringVar(value=str(values.get("VOICE_REPLY_VOICE") or "alloy"))
+        key = tk.StringVar()
+        for row, label, var in ((1, "语音 API URL（Base URL）", base), (2, "语音模型", model), (3, "声音", voice), (4, "语音 API Key（留空保留）", key)):
+            ttk.Label(body, text=label).grid(row=row, column=0, sticky="w", pady=5)
+            ttk.Entry(body, textvariable=var, width=48, show="•" if row == 4 else "").grid(row=row, column=1, sticky="ew", pady=5)
+        body.columnconfigure(1, weight=1)
+        def save() -> None:
+            try:
+                updates = {"VOICE_REPLY_ENABLED": "true" if enabled.get() else "false", "OPENAI_AUDIO_BASE_URL": base.get().strip(), "OPENAI_SPEECH_MODEL": model.get().strip(), "VOICE_REPLY_VOICE": voice.get().strip()}
+                if key.get().strip():
+                    updates["OPENAI_AUDIO_API_KEY"] = key.get().strip()
+                _write_profile_settings(profile_file, updates)
+            except OSError as exc:
+                messagebox.showerror("保存语音设置失败", str(exc), parent=dialog)
+                return
+            self.status.set("语音 API 设置已保存；重启监听后生效。")
+            play_sound("sure")
+            animate_window_close(dialog)
+        buttons = ttk.Frame(body)
+        buttons.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(14, 0))
+        AnimatedButton(buttons, text="保存设置", style="Primary.TButton", command=save).pack(side="right")
+        AnimatedButton(buttons, text="取消", command=lambda: animate_window_close(dialog)).pack(side="right", padx=(0, 8))
+
+    def manage_trigger_settings(self) -> None:
+        """Configure private-message and self-mention replies for the selected account."""
+        profile = self.selected_profile()
+        if not profile:
+            messagebox.showinfo("未选择账号", "请先选择要配置的账号。")
+            return
+        profile_file = PROFILE_DIR / f"{profile}.env"
+        values, _ = _account_model_values(profile_file)
+        dialog = self._new_dialog()
+        dialog.title("私信与自提及设置")
+        dialog.geometry("500x250")
+        dialog.transient(self)
+        dialog.grab_set()
+        body = ttk.Frame(dialog, padding=16)
+        body.pack(fill="both", expand=True)
+        private_var = tk.BooleanVar(value=str(values.get("PRIVATE_REPLY_ENABLED", "0")).lower() in {"1", "true", "yes", "on"})
+        mention_var = tk.BooleanVar(value=str(values.get("SELF_MENTION_ENABLED", "1")).lower() in {"1", "true", "yes", "on"})
+        ttk.Label(body, text=f"当前账号：{profile}", style="CardTitle.TLabel").pack(anchor="w", pady=(0, 12))
+        ttk.Checkbutton(body, text="允许私信直接触发模型回复", variable=private_var).pack(anchor="w", pady=6)
+        ttk.Checkbutton(body, text="允许在群组中 @本账号时触发回复", variable=mention_var).pack(anchor="w", pady=6)
+        ttk.Label(body, text="群组仍会继续遵守群白名单；关闭后只影响该账号。", wraplength=430).pack(anchor="w", pady=(4, 12))
+        buttons = ttk.Frame(body)
+        buttons.pack(fill="x")
+        def save() -> None:
+            try:
+                _write_profile_settings(profile_file, {
+                    "PRIVATE_REPLY_ENABLED": "1" if private_var.get() else "0",
+                    "SELF_MENTION_ENABLED": "1" if mention_var.get() else "0",
+                })
+            except OSError as exc:
+                messagebox.showerror("保存触发设置失败", str(exc), parent=dialog)
+                return
+            self.status.set("私信与自提及设置已保存；重启监听后生效。")
+            play_sound("sure")
+            animate_window_close(dialog)
         AnimatedButton(buttons, text="保存设置", style="Primary.TButton", command=save).pack(side="right")
         AnimatedButton(buttons, text="取消", command=lambda: animate_window_close(dialog)).pack(side="right", padx=(0, 8))
 

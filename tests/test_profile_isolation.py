@@ -8,6 +8,32 @@ with patch.object(sys, "path", [p for p in sys.path if Path(p).name != ".deps"])
     import main
 
 class ProfileIsolationTests(unittest.TestCase):
+    def test_assistant_final_text_never_includes_reasoning_items(self):
+        response = type("Response", (), {
+            "output": [
+                type("Reasoning", (), {"type": "reasoning", "summary": []})(),
+                type("Message", (), {"type": "message", "role": "assistant", "content": [
+                    type("Text", (), {"type": "output_text", "text": "群聊最终摘要"})(),
+                ]})(),
+            ],
+            "output_text": "内部思考过程\n群聊最终摘要",
+        })()
+        self.assertEqual(main.assistant_final_text(response, strict=True), "群聊最终摘要")
+        empty = type("Response", (), {"output": [], "output_text": "泄漏的推理"})()
+        self.assertEqual(main.assistant_final_text(empty, strict=True), "")
+
+    def test_assistant_final_text_supports_sdk_dict_payloads(self):
+        response = {
+            "output": [
+                {"type": "reasoning", "summary": [{"text": "internal"}]},
+                {"type": "message", "role": "assistant", "content": [
+                    {"type": "output_text", "text": "final dict"}
+                ]},
+            ],
+            "output_text": "internal final aggregate",
+        }
+        self.assertEqual(main.assistant_final_text(response, strict=True), "final dict")
+
     def test_accounts_never_inherit_global_or_previous_permissions(self):
         with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {}, clear=True):
             root = Path(folder)
