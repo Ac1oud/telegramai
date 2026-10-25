@@ -10,6 +10,7 @@ import signal
 import subprocess
 import sys
 import threading
+import uuid
 import webbrowser
 import tkinter as tk
 from pathlib import Path
@@ -27,7 +28,33 @@ from version import VERSION
 PROFILE_DIR = ROOT / "profiles"
 if not FROZEN:
     sys.path.insert(0, str(ROOT / ".deps"))
-from main import create_profile  # noqa: E402
+import main as _main  # noqa: E402
+
+create_profile = _main.create_profile
+DEFAULT_MODEL_INSTRUCTIONS = getattr(_main, "DEFAULT_MODEL_INSTRUCTIONS", "")
+encode_env_value = getattr(_main, "encode_env_value", None)
+read_env_file = getattr(_main, "read_env_file", None)
+parse_global_speaking_rules = getattr(_main, "parse_global_speaking_rules", None)
+if encode_env_value is None:
+    def encode_env_value(value: str) -> str:
+        return json.dumps(value, ensure_ascii=False) if "\n" in value or "\r" in value else "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+if read_env_file is None:
+    def read_env_file(path: Path) -> dict[str, str | None]:
+        from dotenv.parser import parse_stream
+        if not path.exists():
+            return {}
+        with path.open("r", encoding="utf-8-sig") as stream:
+            return {item.key: item.value for item in parse_stream(stream) if item.key and not item.error}
+if parse_global_speaking_rules is None:
+    def parse_global_speaking_rules(raw: str | None) -> tuple[tuple[str, str], ...]:
+        source = str(raw or "").strip()
+        if not source:
+            return ()
+        try:
+            entries = json.loads(source)
+        except (TypeError, json.JSONDecodeError):
+            return (("legacy", source),)
+        return tuple((str(item["id"]), str(item["text"])) for item in entries if isinstance(item, dict) and item.get("id") and item.get("text")) if isinstance(entries, list) else (("legacy", source),)
 
 
 PROFILE_MODEL_KEYS = (
@@ -37,15 +64,14 @@ PROFILE_MODEL_KEYS = (
     "MODEL_SYSTEM_PROMPT",
     "MODEL_PERSONA_PROMPT", "ACCOUNT_SPEAKING_RULES", "OPENAI_AUDIO_API_KEY", "OPENAI_AUDIO_BASE_URL",
     "OPENAI_SPEECH_MODEL", "VOICE_REPLY_VOICE", "VOICE_REPLY_ENABLED", "PRIVATE_REPLY_ENABLED", "SELF_MENTION_ENABLED",
+    "GLOBAL_RULE_EXCEPTIONS",
 )
 
 
 def _account_model_values(profile_file: Path) -> tuple[dict[str, str | None], dict[str, str | None]]:
     """返回账号有效模型配置和账号文件原值；旧账号缺项时读取共享默认值。"""
-    from dotenv import dotenv_values
-
-    shared = dict(dotenv_values(ROOT / ".env", interpolate=False)) if (ROOT / ".env").exists() else {}
-    profile = dict(dotenv_values(profile_file, interpolate=False)) if profile_file.exists() else {}
+    shared = read_env_file(ROOT / ".env")
+    profile = read_env_file(profile_file)
     effective = dict(shared)
     effective.update({key: value for key, value in profile.items() if key in PROFILE_MODEL_KEYS})
     return effective, profile
@@ -53,17 +79,46 @@ def _account_model_values(profile_file: Path) -> tuple[dict[str, str | None], di
 
 def _write_profile_settings(profile_file: Path, updates: dict[str, str]) -> None:
     text = profile_file.read_text(encoding="utf-8-sig") if profile_file.exists() else ""
-    for name, value in updates.items():
-        encoded = "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
-        line = f"{name}={encoded}"
-        pattern = re.compile(rf"(?m)^{re.escape(name)}=.*$")
-        if pattern.search(text):
-            text = pattern.sub(lambda _match, line=line: line, text, count=1)
-        else:
-            if text and not text.endswith("\n"):
-                text += "\n"
-            text += line + "\n"
-    profile_file.write_text(text, encoding="utf-8")
+    lines = text.splitlines(keepends=True)
+    output: list[str] = []
+    pending = set(updates)
+    index = 0
+
+    def has_closing_quote(value: str, quote: str) -> bool:
+        value = value.rstrip("\r\n").rstrip()
+        if not value.endswith(quote):
+            return False
+        slash_count = len(value[:-1]) - len(value[:-1].rstrip("\\"))
+        return slash_count % 2 == 0
+
+    while index < len(lines):
+        line = lines[index]
+        match = re.match(r"^\s*([A-Za-z_][A-Za-z0-9_]*)=(.*?)(?:\r?\n)?$", line)
+        name = match.group(1) if match else None
+        if name not in updates:
+            output.append(line)
+            index += 1
+            continue
+
+        if name in pending:
+            output.append(f"{name}={encode_env_value(updates[name])}\n")
+            pending.remove(name)
+
+        raw_value = match.group(2).rstrip("\r\n") if match else ""
+        quote = raw_value[:1] if raw_value[:1] in {"'", '"'} else ""
+        index += 1
+        if quote and not has_closing_quote(raw_value, quote):
+            while index < len(lines):
+                continuation = lines[index]
+                if re.match(r"^\s*[A-Za-z_][A-Za-z0-9_]*=", continuation):
+                    break
+                index += 1
+                if has_closing_quote(continuation, quote):
+                    break
+
+    for name in pending:
+        output.append(f"{name}={encode_env_value(updates[name])}\n")
+    profile_file.write_text("".join(output), encoding="utf-8")
 
 
 def python_console_executable() -> str:
@@ -667,50 +722,303 @@ class AccountManager(tk.Tk):
         AnimatedButton(buttons, text="取消", command=lambda: animate_window_close(dialog)).pack(side="right", padx=(0, 8))
 
     def manage_global_rules(self) -> None:
-        """Edit shared persona/rules defaults stored in the root .env file."""
-        from dotenv import dotenv_values
-
+        """Edit the built-in global prompt, per-account overrides and local Telegram API credentials."""
         env_file = ROOT / ".env"
         try:
-            values = dotenv_values(env_file, interpolate=False) if env_file.exists() else {}
+            values = read_env_file(env_file)
         except (OSError, UnicodeError, ValueError) as exc:
-            messagebox.showerror("读取全局规则失败", str(exc))
+            messagebox.showerror("读取本机设置失败", str(exc), parent=self)
             return
-
         dialog = self._new_dialog()
-        dialog.title("全局人设与发言规则")
-        dialog.geometry("700x620")
-        dialog.minsize(620, 520)
+        dialog.title("人设、发言规则与 Telegram API")
+        dialog.geometry("820x700")
+        dialog.minsize(700, 600)
         dialog.transient(self)
         dialog.grab_set()
-        body = ttk.Frame(dialog, padding=16)
+        body = ttk.Frame(dialog, padding=14)
         body.pack(fill="both", expand=True)
+        notebook = ttk.Notebook(body)
+        notebook.pack(fill="both", expand=True)
+
+        def editor(parent: ttk.Frame, title: str, *, height: int = 8) -> tk.Text:
+            section = ttk.Frame(parent)
+            section.pack(fill="both", expand=True, pady=(0, 9))
+            ttk.Label(section, text=title).pack(anchor="w", pady=(2, 4))
+            text = tk.Text(section, height=height, wrap="word", relief="solid", borderwidth=1, undo=True)
+            scrollbar = ttk.Scrollbar(section, orient="vertical", command=text.yview)
+            text.configure(yscrollcommand=scrollbar.set)
+            text.pack(side="left", fill="both", expand=True)
+            scrollbar.pack(side="right", fill="y")
+            return text
+
+        global_tab = ttk.Frame(notebook, padding=12)
+        account_tab = ttk.Frame(notebook, padding=12)
+        telegram_tab = ttk.Frame(notebook, padding=18)
+        notebook.add(global_tab, text="全局统一设定")
+        notebook.add(account_tab, text="账号独立设定")
+        notebook.add(telegram_tab, text="Telegram API")
+
         ttk.Label(
-            body,
-            text="以下内容作为所有账号共用的基础设定；账号内单独填写的人设与规则会追加在后，作为该账号的个性化补充。",
-            wraplength=640,
-        ).pack(anchor="w", pady=(0, 12))
-        ttk.Label(body, text="全局人设 / 固有提示词").pack(anchor="w")
-        persona = tk.Text(body, height=10, wrap="word", relief="solid", borderwidth=1)
-        persona.pack(fill="both", expand=True, pady=(4, 12))
-        persona.insert("1.0", str(values.get("MODEL_PERSONA_PROMPT") or ""))
-        ttk.Label(body, text="全局统一发言规则").pack(anchor="w")
-        rules = tk.Text(body, height=10, wrap="word", relief="solid", borderwidth=1)
-        rules.pack(fill="both", expand=True, pady=(4, 8))
-        rules.insert("1.0", str(values.get("GLOBAL_SPEAKING_RULES") or ""))
+            global_tab,
+            text="这里显示并编辑 main.py 当前内置的完整人设与发言提示词。保存后作为所有账号的全局基础；账号独立提示词仍可在第二页查看和编辑。",
+            wraplength=750,
+        ).pack(anchor="w", pady=(0, 8))
+        global_prompt_value = (
+            values.get("GLOBAL_MODEL_INSTRUCTIONS")
+            or values.get("MODEL_SYSTEM_PROMPT")
+            or values.get("MODEL_PERSONA_PROMPT")
+            or DEFAULT_MODEL_INSTRUCTIONS
+        )
+        global_prompt = editor(global_tab, "全局人设 / 固有提示词（main.py 内置内容已载入）", height=12)
+        global_prompt.insert("1.0", str(global_prompt_value))
+        rules_source = values.get("GLOBAL_SPEAKING_RULES") or values.get("ACCOUNT_SPEAKING_RULES")
+        global_rule_items = [
+            {"id": rule_id, "text": text}
+            for rule_id, text in parse_global_speaking_rules(rules_source)
+        ]
+        rules_section = ttk.Frame(global_tab)
+        rules_section.pack(fill="x", pady=(4, 0))
+        ttk.Label(
+            rules_section,
+            text="全局统一发言规则（所有账号生效；可在账号页逐条设置例外）",
+        ).pack(anchor="w", pady=(2, 4))
+        global_rules_list = tk.Listbox(rules_section, height=5, exportselection=False)
+        global_rules_scroll = ttk.Scrollbar(rules_section, orient="vertical", command=global_rules_list.yview)
+        global_rules_list.configure(yscrollcommand=global_rules_scroll.set)
+        global_rules_list.pack(side="left", fill="x", expand=True)
+        global_rules_scroll.pack(side="right", fill="y")
+        account_exception_list: tk.Listbox | None = None
+
+        def refresh_global_rule_lists(selected_exceptions: set[str] | None = None) -> None:
+            if selected_exceptions is None:
+                selected_exceptions = {
+                    global_rule_items[index]["id"]
+                    for index in account_exception_list.curselection()
+                    if index < len(global_rule_items)
+                } if account_exception_list is not None else set()
+            global_rules_list.delete(0, tk.END)
+            for item in global_rule_items:
+                label = " ".join(item["text"].split())
+                global_rules_list.insert(tk.END, f"{item['id'][:8]}  {label[:140]}")
+            if account_exception_list is not None:
+                account_exception_list.delete(0, tk.END)
+                for item in global_rule_items:
+                    label = " ".join(item["text"].split())
+                    account_exception_list.insert(tk.END, f"{label[:140]}")
+                    if item["id"] in selected_exceptions:
+                        account_exception_list.selection_set(tk.END)
+
+        def edit_rule_dialog(title: str, initial: str, save_value: object) -> None:
+            rule_dialog = self._new_dialog()
+            rule_dialog.title(title)
+            rule_dialog.geometry("560x360")
+            rule_dialog.transient(dialog)
+            rule_dialog.grab_set()
+            content = ttk.Frame(rule_dialog, padding=14)
+            content.pack(fill="both", expand=True)
+            ttk.Label(content, text="规则内容").pack(anchor="w", pady=(0, 5))
+            rule_text = tk.Text(content, height=10, wrap="word", undo=True)
+            rule_text.pack(fill="both", expand=True)
+            rule_text.insert("1.0", initial)
+            actions = ttk.Frame(content)
+            actions.pack(fill="x", pady=(10, 0))
+
+            def commit_rule() -> None:
+                value = rule_text.get("1.0", "end-1c").strip()
+                if not value:
+                    messagebox.showerror("规则不能为空", "请填写规则内容。", parent=rule_dialog)
+                    return
+                save_value(value)
+                animate_window_close(rule_dialog)
+
+            AnimatedButton(actions, text="保存规则", style="Primary.TButton", command=commit_rule).pack(side="right")
+            AnimatedButton(actions, text="取消", command=lambda: animate_window_close(rule_dialog)).pack(side="right", padx=(0, 8))
+
+        def add_global_rule() -> None:
+            def save_rule(value: str) -> None:
+                global_rule_items.append({"id": uuid.uuid4().hex, "text": value})
+                refresh_global_rule_lists()
+            edit_rule_dialog("新增全局发言规则", "", save_rule)
+
+        def edit_global_rule() -> None:
+            selection = global_rules_list.curselection()
+            if not selection:
+                messagebox.showinfo("未选择规则", "请先选择要编辑的全局规则。", parent=dialog)
+                return
+            index = selection[0]
+            def save_rule(value: str) -> None:
+                global_rule_items[index]["text"] = value
+                refresh_global_rule_lists()
+                global_rules_list.selection_set(index)
+            edit_rule_dialog("编辑全局发言规则", global_rule_items[index]["text"], save_rule)
+
+        def delete_global_rule() -> None:
+            selection = global_rules_list.curselection()
+            if not selection:
+                messagebox.showinfo("未选择规则", "请先选择要删除的全局规则。", parent=dialog)
+                return
+            index = selection[0]
+            if messagebox.askyesno("删除全局规则", "删除所选规则？已有账号例外中的对应项也将失效。", parent=dialog):
+                del global_rule_items[index]
+                refresh_global_rule_lists()
+
+        rule_actions = ttk.Frame(rules_section)
+        rule_actions.pack(fill="x", pady=(5, 0))
+        AnimatedButton(rule_actions, text="添加规则", command=add_global_rule).pack(side="left")
+        AnimatedButton(rule_actions, text="编辑规则", command=edit_global_rule).pack(side="left", padx=(6, 0))
+        AnimatedButton(rule_actions, text="删除规则", command=delete_global_rule).pack(side="left", padx=(6, 0))
+        refresh_global_rule_lists(set())
+
+        profiles = sorted(path.stem for path in PROFILE_DIR.glob("*.env")) if PROFILE_DIR.exists() else []
+        default_profile_label = "默认配置（.env）"
+        profile_choices = [default_profile_label, *profiles]
+        selected_profile = self.selected_profile()
+        profile_var = tk.StringVar(value=selected_profile if selected_profile in profiles else default_profile_label)
+        selector = ttk.Frame(account_tab)
+        selector.pack(fill="x", pady=(0, 8))
+        ttk.Label(selector, text="账号配置").pack(side="left")
+        profile_combo = ttk.Combobox(selector, textvariable=profile_var, values=profile_choices, state="readonly", width=32)
+        profile_combo.pack(side="left", padx=(8, 0))
+        account_fields = {
+            "MODEL_SYSTEM_PROMPT": editor(account_tab, "该账号固有提示词（优先级高于全局人设）", height=7),
+            "MODEL_PERSONA_PROMPT": editor(account_tab, "该账号人设补充", height=5),
+            "ACCOUNT_SPEAKING_RULES": editor(account_tab, "该账号发言规则", height=5),
+        }
+        exception_section = ttk.LabelFrame(
+            account_tab,
+            text="全局发言规则例外（仅跳过所选规则；其他全局规则继续生效）",
+            padding=8,
+        )
+        exception_section.pack(fill="x", pady=(2, 8))
+        account_exception_list = tk.Listbox(
+            exception_section,
+            height=5,
+            selectmode=tk.MULTIPLE,
+            exportselection=False,
+        )
+        exception_scroll = ttk.Scrollbar(exception_section, orient="vertical", command=account_exception_list.yview)
+        account_exception_list.configure(yscrollcommand=exception_scroll.set)
+        account_exception_list.pack(side="left", fill="x", expand=True)
+        exception_scroll.pack(side="right", fill="y")
+        refresh_global_rule_lists(set())
+
+        def load_account_settings(_event: object = None) -> None:
+            profile = profile_var.get()
+            file = env_file if profile == default_profile_label else PROFILE_DIR / f"{profile}.env" if profile else None
+            try:
+                profile_values = read_env_file(file) if file else {}
+            except (OSError, UnicodeError, ValueError) as exc:
+                messagebox.showerror("读取账号人设失败", str(exc), parent=dialog)
+                return
+            for key, text in account_fields.items():
+                text.delete("1.0", "end")
+                text.insert("1.0", str(profile_values.get(key) or ""))
+            try:
+                exception_ids = set(json.loads(str(profile_values.get("GLOBAL_RULE_EXCEPTIONS") or "[]")))
+            except (TypeError, json.JSONDecodeError):
+                exception_ids = set()
+            refresh_global_rule_lists(exception_ids)
+            for index, item in enumerate(global_rule_items):
+                if item["id"] in exception_ids:
+                    account_exception_list.selection_set(index)
+
+        profile_combo.bind("<<ComboboxSelected>>", load_account_settings)
+        load_account_settings()
+
+        def copy_account_to_global() -> None:
+            parts = [account_fields[key].get("1.0", "end-1c").strip() for key in ("MODEL_SYSTEM_PROMPT", "MODEL_PERSONA_PROMPT")]
+            combined_prompt = "\n\n".join(part for part in parts if part)
+            account_rules = account_fields["ACCOUNT_SPEAKING_RULES"].get("1.0", "end-1c").strip()
+            if not combined_prompt and not account_rules:
+                messagebox.showinfo("没有可复制的设定", "当前账号没有单独填写的人设或发言规则。", parent=dialog)
+                return
+            if not messagebox.askyesno(
+                "复制账号设定",
+                "将当前账号的人设、固有提示词和发言规则复制到全局编辑页，并替换当前全局编辑内容？",
+                parent=dialog,
+            ):
+                return
+            global_prompt.delete("1.0", "end")
+            global_prompt.insert("1.0", combined_prompt or DEFAULT_MODEL_INSTRUCTIONS)
+            global_rule_items.clear()
+            if account_rules:
+                global_rule_items.append({"id": uuid.uuid4().hex, "text": account_rules})
+            refresh_global_rule_lists(set())
+            notebook.select(global_tab)
+
+        copy_button = AnimatedButton(account_tab, text="将当前账号设定复制到全局编辑页", command=copy_account_to_global)
+        copy_button.pack(anchor="e", pady=(0, 4))
+        if not profiles:
+            ttk.Label(account_tab, text="尚无独立账号配置；当前显示的是根目录 .env 默认配置。", foreground="#7f6b8f").pack(anchor="w")
+
+        ttk.Label(
+            telegram_tab,
+            text="Telegram API 凭据只写入本机项目根目录 .env，不会放进账号配置文件或上传到 GitHub。修改凭据后需要重启监听。",
+            wraplength=720,
+        ).pack(anchor="w", pady=(0, 18))
+        api_id_var = tk.StringVar(value=str(values.get("TELEGRAM_API_ID") or ""))
+        api_hash_var = tk.StringVar()
+        ttk.Label(telegram_tab, text="TELEGRAM_API_ID").pack(anchor="w")
+        ttk.Entry(telegram_tab, textvariable=api_id_var, width=48).pack(anchor="w", pady=(4, 14))
+        ttk.Label(telegram_tab, text="TELEGRAM_API_HASH").pack(anchor="w")
+        hash_row = ttk.Frame(telegram_tab)
+        hash_row.pack(fill="x", pady=(4, 5))
+        hash_entry = ttk.Entry(hash_row, textvariable=api_hash_var, show="•", width=48)
+        hash_entry.pack(side="left", fill="x", expand=True)
+        show_hash_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            hash_row,
+            text="显示",
+            variable=show_hash_var,
+            command=lambda: hash_entry.configure(show="" if show_hash_var.get() else "•"),
+        ).pack(side="left", padx=(8, 0))
+        hash_saved = bool(str(values.get("TELEGRAM_API_HASH") or "").strip())
+        ttk.Label(telegram_tab, text="已在本机保存（隐藏）；留空保持原值。" if hash_saved else "尚未设置，请填写 API Hash。").pack(anchor="w")
+        ttk.Label(telegram_tab, text="API ID 可见；API Hash 默认隐藏。可从 my.telegram.org/apps 获取。", foreground="#7f6b8f").pack(anchor="w", pady=(12, 0))
+
         buttons = ttk.Frame(body)
-        buttons.pack(fill="x", pady=(10, 0))
+        buttons.pack(fill="x", pady=(12, 0))
 
         def save() -> None:
-            try:
-                _write_profile_settings(env_file, {
-                    "MODEL_PERSONA_PROMPT": persona.get("1.0", "end-1c").strip(),
-                    "GLOBAL_SPEAKING_RULES": rules.get("1.0", "end-1c").strip(),
-                })
-            except OSError as exc:
-                messagebox.showerror("保存全局规则失败", str(exc), parent=dialog)
+            api_id_text = api_id_var.get().strip()
+            new_hash = api_hash_var.get().strip()
+            if api_id_text and (not api_id_text.isdigit() or int(api_id_text) <= 0):
+                messagebox.showerror("API ID 格式错误", "TELEGRAM_API_ID 必须是正整数。", parent=dialog)
+                notebook.select(telegram_tab)
                 return
-            self.status.set("全局人设与发言规则已保存；重启监听后对所有账号生效。")
+            if (api_id_text or new_hash) and not (new_hash or hash_saved):
+                messagebox.showerror("缺少 API Hash", "请填写 TELEGRAM_API_HASH。", parent=dialog)
+                notebook.select(telegram_tab)
+                return
+            try:
+                account_updates = {
+                    key: field.get("1.0", "end-1c").strip()
+                    for key, field in account_fields.items()
+                }
+                selected_exceptions = [
+                    global_rule_items[index]["id"]
+                    for index in account_exception_list.curselection()
+                    if index < len(global_rule_items)
+                ]
+                account_updates["GLOBAL_RULE_EXCEPTIONS"] = json.dumps(selected_exceptions, ensure_ascii=False)
+                if profile_var.get() == default_profile_label:
+                    _write_profile_settings(env_file, account_updates)
+                elif profile_var.get():
+                    profile_file = PROFILE_DIR / f"{profile_var.get()}.env"
+                    _write_profile_settings(profile_file, account_updates)
+                root_updates = {
+                    "GLOBAL_MODEL_INSTRUCTIONS": global_prompt.get("1.0", "end-1c").strip(),
+                    "GLOBAL_SPEAKING_RULES": json.dumps(global_rule_items, ensure_ascii=False),
+                }
+                if api_id_text:
+                    root_updates["TELEGRAM_API_ID"] = api_id_text
+                if new_hash:
+                    root_updates["TELEGRAM_API_HASH"] = new_hash
+                _write_profile_settings(env_file, root_updates)
+            except OSError as exc:
+                messagebox.showerror("保存失败", str(exc), parent=dialog)
+                return
+            self.status.set("人设与发言规则已保存，新触发的回复立即生效；Telegram API 凭据需重启监听后生效。")
             play_sound("sure")
             animate_window_close(dialog)
 

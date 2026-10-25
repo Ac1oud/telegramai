@@ -48,13 +48,13 @@ class ReleaseUpdaterTests(unittest.TestCase):
         releases = [
             {"tag_name": "v27.0.0-alpha", "draft": True},
             {"tag_name": "v26.1.0-alpha", "draft": False},
-            {"tag_name": "v26.1.9-alpha", "draft": False},
+            {"tag_name": "v26.1.10-alpha", "draft": False},
             {"tag_name": "v26.1.1-alpha", "draft": False},
             {"tag_name": "unversioned", "draft": False},
         ]
         with patch.object(updater, "_request", return_value=json.dumps(releases).encode()):
             latest = updater.check_latest()
-        self.assertEqual(latest["tag_name"], "v26.1.9-alpha")
+        self.assertEqual(latest["tag_name"], "v26.1.10-alpha")
 
     def test_download_verifies_release_digest_before_writing(self):
         payload = b"verified executable bytes"
@@ -83,14 +83,14 @@ class ReleaseUpdaterTests(unittest.TestCase):
                 self.assertFalse(updater.is_snoozed("v26.1.2-alpha", now=100 + updater.SNOOZE_SECONDS + 1))
 
     def test_manual_check_bypasses_snooze(self):
-        releases = [{"tag_name": "v26.1.9-alpha", "draft": False}]
+        releases = [{"tag_name": "v26.1.10-alpha", "draft": False}]
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "update-state.json"
             with patch.object(updater, "state_path", return_value=path), \
                  patch.object(updater, "_request", return_value=json.dumps(releases).encode()):
-                updater.snooze("v26.1.9-alpha", now=100)
+                updater.snooze("v26.1.10-alpha", now=100)
                 self.assertIsNone(updater.check_latest(now=101))
-                self.assertEqual(updater.check_latest(now=101, ignore_snooze=True)["tag_name"], "v26.1.9-alpha")
+                self.assertEqual(updater.check_latest(now=101, ignore_snooze=True)["tag_name"], "v26.1.10-alpha")
 
 
 if __name__ == "__main__":
