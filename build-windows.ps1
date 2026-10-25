@@ -10,4 +10,4 @@ if (-not (Test-Path -LiteralPath $BuildPython)) {
 if ($LASTEXITCODE -ne 0) { throw '安装构建依赖失败' }
 & $BuildPython -m PyInstaller --noconfirm TelegramAI.spec
 if ($LASTEXITCODE -ne 0) { throw 'EXE 构建失败' }
-Write-Host '已生成 dist\TelegramAI.exe（无终端）和 dist\TelegramAI-console.exe（命令行版）。复制到项目根目录即可使用现有配置。'
+Write-Host 'Build complete: dist\TelegramAI.exe and dist\TelegramAI-console.exe are ready.'
