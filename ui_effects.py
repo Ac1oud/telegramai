@@ -124,7 +124,7 @@ def _window_rect(window: tk.Tk | tk.Toplevel) -> tuple[int, int, int, int]:
 
 
 def animate_window_open(
-    window: tk.Tk | tk.Toplevel, duration_ms: int = 260,
+    window: tk.Tk | tk.Toplevel, duration_ms: int = 285,
 ) -> Animator:
     """Slide into place with a small spring, at full size and opacity.
 
@@ -172,17 +172,34 @@ def animate_window_open(
 
     # Leave the first idle pass before measuring: Tk can defer geometry changes
     # made after this helper until that pass has finished (notably on Windows).
-    window.after_idle(lambda: window.after(0, prepare))
+    # A withdrawn root can still be mapped by Tk while idle geometry updates
+    # settle. Keep it withdrawn until the requested size and start position
+    # have been applied, then map it for the first time.
+    window.after(1, prepare)
     return animator
 
 
-def animate_window_close(window: tk.Tk | tk.Toplevel, duration_ms: int = 150) -> None:
+def animate_window_close(window: tk.Tk | tk.Toplevel, duration_ms: int = 165) -> None:
     """Slide down before closing, keeping native controls at a stable size."""
     if getattr(window, "_motion_closing", False):
         return
     window._motion_closing = True
     animator = getattr(window, "_window_motion", None) or Animator(window)
     animator.cancel()
+    overlay = getattr(window, "_modal_overlay", None)
+    owner = window.master.winfo_toplevel() if window.master is not None else None
+    if overlay is not None and owner is not None and overlay.winfo_exists():
+        owner_animator = getattr(owner, "motion", None) or Animator(owner)
+        native_fade = getattr(overlay, "_modal_overlay_fade", None)
+        if not getattr(overlay, "_modal_overlay_static", False):
+            owner_animator.animate(
+                "modal-overlay", duration_ms,
+                lambda progress: (
+                    native_fade(1.0 - progress)
+                    if native_fade is not None
+                    else overlay.attributes("-alpha", 0.30 * (1 - progress))
+                ),
+            )
     if not window.winfo_ismapped():
         window.destroy()
         return
@@ -216,7 +233,7 @@ class AnimatedButton(ttk.Button):
         self._motion_style = ttk.Style(master)
         self._motion_id = next(_button_ids)
         self._palette_overrides = dict(palette or {})
-        self._animation_ms = animation_ms
+        self._animation_ms = max(140, animation_ms)
         self._hovered = False
         base_style = str(kwargs.pop("style", "TButton") or "TButton")
         self._install_style(base_style)

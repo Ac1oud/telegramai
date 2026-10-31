@@ -34,7 +34,7 @@ if runtime_ca.is_file():
     resources.append((str(runtime_ca), "."))
 a = Analysis([str(root / "desktop_entry.py")], pathex=[str(root)],
     binaries=[], datas=resources,
-    hiddenimports=["account_manager", "main", "ui_effects", "project_updater", "release_updater", "app_runtime", "version", "gui_worker", "image_references", "sound_effects"],
+    hiddenimports=["account_manager", "main", "ui_effects", "project_updater", "release_updater", "app_runtime", "version", "gui_worker", "bot_gui_worker", "image_references", "sound_effects", "bot_hosting"],
     hookspath=[], runtime_hooks=[], excludes=[], noarchive=False,
 )
 pyz = PYZ(a.pure)

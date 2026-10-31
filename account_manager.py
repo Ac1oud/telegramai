@@ -16,6 +16,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 from urllib.parse import urlparse
+from bot_hosting import BotHostingService, load_config as load_bot_config, save_config as save_bot_config
 
 from project_updater import GitUpdater, UpdateError, UpdateStatus
 from release_updater import ReleaseUpdateError, check_latest, download_update, launch_replacement, snooze
@@ -26,6 +27,8 @@ from version import VERSION
 
 
 PROFILE_DIR = ROOT / "profiles"
+
+
 if not FROZEN:
     sys.path.insert(0, str(ROOT / ".deps"))
 import main as _main  # noqa: E402
@@ -35,6 +38,7 @@ DEFAULT_MODEL_INSTRUCTIONS = getattr(_main, "DEFAULT_MODEL_INSTRUCTIONS", "")
 encode_env_value = getattr(_main, "encode_env_value", None)
 read_env_file = getattr(_main, "read_env_file", None)
 parse_global_speaking_rules = getattr(_main, "parse_global_speaking_rules", None)
+default_global_speaking_rules = getattr(_main, "default_global_speaking_rules", None)
 if encode_env_value is None:
     def encode_env_value(value: str) -> str:
         return json.dumps(value, ensure_ascii=False) if "\n" in value or "\r" in value else "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
@@ -55,6 +59,10 @@ if parse_global_speaking_rules is None:
         except (TypeError, json.JSONDecodeError):
             return (("legacy", source),)
         return tuple((str(item["id"]), str(item["text"])) for item in entries if isinstance(item, dict) and item.get("id") and item.get("text")) if isinstance(entries, list) else (("legacy", source),)
+if default_global_speaking_rules is None:
+    def default_global_speaking_rules() -> tuple[tuple[str, str], ...]:
+        chunks = [part.strip() for part in re.split(r"(?<=[。！？；])", DEFAULT_MODEL_INSTRUCTIONS) if part.strip()]
+        return tuple((f"main-{index:03d}", text) for index, text in enumerate(chunks, 1))
 
 
 PROFILE_MODEL_KEYS = (
@@ -134,7 +142,6 @@ def python_console_executable() -> str:
 class AccountManager(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self._show_startup_splash()
         animate_window_open(self)
         self.title(f"Telegram AI · {VERSION}")
         self.geometry("820x730")
@@ -148,6 +155,7 @@ class AccountManager(tk.Tk):
         self.release_results: queue.Queue[dict | Exception | None] = queue.Queue()
         self.release_busy = False
         self.release_manual = False
+        self.bot_host: BotHostingService | None = None
         self.update_buttons: list[ttk.Button] = []
         self.protocol("WM_DELETE_WINDOW", self._close_manager)
         self._configure_styles()
@@ -156,7 +164,6 @@ class AccountManager(tk.Tk):
         self._load_app_icon()
         self._build_ui()
         self.refresh_profiles()
-        self.after(900, self._dismiss_startup_splash)
         self.after(1200, self._refresh_process_status)
         if FROZEN and not SOURCE_MODE:
             self.after(1600, self._show_update_success_if_requested)
@@ -217,7 +224,7 @@ class AccountManager(tk.Tk):
         style.configure("TFrame", background=self.colors["background"])
         style.configure("TLabel", background=self.colors["background"], foreground=self.colors["text"], font=("Microsoft YaHei UI", 9))
         style.configure("TCheckbutton", background=self.colors["background"], foreground=self.colors["text"], font=("Microsoft YaHei UI", 9))
-        style.configure("TButton", background="#F3EFF8", foreground="#51445F", padding=(10, 7), borderwidth=0, font=("Microsoft YaHei UI", 9))
+        style.configure("TButton", background="#F3EFF8", foreground="#51445F", padding=(12, 8), borderwidth=0, relief="flat", focuscolor="#D8C6EA", font=("Microsoft YaHei UI", 9))
         style.map("TButton", background=[("pressed", "#DCCCEB"), ("active", "#E8DDF2")])
         style.configure("App.TFrame", background=self.colors["background"])
         style.configure(
@@ -225,6 +232,37 @@ class AccountManager(tk.Tk):
             bordercolor=self.colors["border"], lightcolor=self.colors["border"], darkcolor=self.colors["border"],
         )
         style.configure("CardInner.TFrame", background=self.colors["surface"], borderwidth=0, relief="flat")
+        style.configure("TLabelframe", background=self.colors["background"], bordercolor=self.colors["border"], lightcolor=self.colors["border"], darkcolor=self.colors["border"], relief="solid", borderwidth=1)
+        style.configure("TLabelframe.Label", background=self.colors["background"], foreground=self.colors["text"], font=("Microsoft YaHei UI", 9, "bold"))
+        style.configure("TNotebook", background=self.colors["background"], borderwidth=0, tabmargins=(0, 0, 0, 0))
+        style.configure("TNotebook.Tab", background="#EEE8F4", foreground="#5B4C68", padding=(13, 7), borderwidth=0, font=("Microsoft YaHei UI", 9))
+        style.map("TNotebook.Tab", background=[("selected", "#FFFFFF"), ("active", "#E8DDF2")], foreground=[("selected", self.colors["accent"]), ("active", self.colors["text"])])
+        style.configure(
+            "TCombobox",
+            fieldbackground="#FFFFFF",
+            background="#F3EFF8",
+            foreground=self.colors["text"],
+            bordercolor="#DCCCEB",
+            lightcolor="#DCCCEB",
+            darkcolor="#DCCCEB",
+            arrowcolor=self.colors["accent"],
+            arrowsize=12,
+            padding=(8, 5),
+        )
+        style.map(
+            "TCombobox",
+            fieldbackground=[
+                ("disabled", "#F3EFF8"),
+                ("readonly", "#FFFFFF"),
+                ("focus", "#FFFFFF"),
+                ("!disabled", "#FFFFFF"),
+            ],
+            background=[("pressed", "#E8DDF2"), ("active", "#E8DDF2"), ("!disabled", "#F3EFF8")],
+            foreground=[("disabled", "#9B91A5"), ("!disabled", self.colors["text"])],
+            bordercolor=[("focus", "#B992D2"), ("active", "#CBB5E1"), ("!disabled", "#DCCCEB")],
+            lightcolor=[("focus", "#B992D2"), ("!disabled", "#DCCCEB")],
+            darkcolor=[("focus", "#B992D2"), ("!disabled", "#DCCCEB")],
+        )
         style.configure(
             "Title.TLabel", background=self.colors["background"], foreground=self.colors["text"],
             font=("Microsoft YaHei UI", 21, "bold"),
@@ -243,7 +281,7 @@ class AccountManager(tk.Tk):
         )
         style.configure(
             "Primary.TButton", background=self.colors["accent"], foreground="#FFFFFF",
-            padding=(12, 10), borderwidth=0, relief="flat", focuscolor="#E4D7F2",
+            padding=(13, 10), borderwidth=0, relief="flat", focuscolor="#E4D7F2",
             font=("Microsoft YaHei UI", 9, "bold"),
         )
         style.map(
@@ -253,7 +291,7 @@ class AccountManager(tk.Tk):
         )
         style.configure(
             "Quiet.TButton", background="#F3EFF8", foreground="#51445F",
-            padding=(10, 10), borderwidth=0, relief="flat", focuscolor="#CBB5E1",
+            padding=(12, 9), borderwidth=0, relief="flat", focuscolor="#CBB5E1",
             font=("Microsoft YaHei UI", 9),
         )
         style.map("Quiet.TButton", background=[("pressed", "#DCCCEB"), ("active", "#E8DDF2")])
@@ -263,7 +301,9 @@ class AccountManager(tk.Tk):
             font=("Microsoft YaHei UI", 9),
         )
         style.map("Danger.TButton", background=[("pressed", "#F0D3E0"), ("active", "#F5DFE8")])
-        style.configure("Vertical.TScrollbar", background="#E9DFEC", troughcolor=self.colors["surface"], borderwidth=0)
+        style.configure("Vertical.TScrollbar", background="#D8C5E9", troughcolor="#F5F0F8", borderwidth=0, relief="flat", arrowsize=0, width=12)
+        style.map("Vertical.TScrollbar", background=[("active", "#B992D2"), ("pressed", "#A97CC5")])
+        style.layout("Vertical.TScrollbar", [("Vertical.Scrollbar.trough", {"children": [("Vertical.Scrollbar.thumb", {"expand": "1", "sticky": "ns"})], "sticky": "ns"})])
 
     def _load_app_icon(self) -> None:
         """窗口、任务栏和页面共用图标；资源缺失时仍能启动。"""
@@ -279,8 +319,45 @@ class AccountManager(tk.Tk):
             pass
 
     def _new_dialog(self, parent: tk.Misc | None = None) -> tk.Toplevel:
-        dialog = tk.Toplevel(parent or self)
-        animate_window_open(dialog)
+        owner = parent or self
+        dialog = tk.Toplevel(owner)
+        # Toplevel() can be mapped once before the event loop returns. Hide it
+        # before configuring the modal layer so Windows never paints its default
+        # top-left position for one frame.
+        dialog.withdraw()
+        overlay = None
+        if owner is self and self.winfo_ismapped():
+            overlay = tk.Toplevel(self)
+            overlay.withdraw()
+            overlay.overrideredirect(True)
+            overlay.configure(background="#DCCCEB")
+            overlay.geometry(f"{self.winfo_width()}x{self.winfo_height()}+{self.winfo_rootx()}+{self.winfo_rooty()}")
+            overlay.update_idletasks()
+            overlay.deiconify()
+            overlay.lift(self)
+            overlay.update_idletasks()
+            # Use a plain translucent tint to keep interaction responsive.
+            overlay.attributes("-alpha", 0.30)
+            overlay._modal_overlay = True
+            overlay._modal_overlay_static = True
+            self._modal_overlay = overlay
+            # Keep the tint layer static. Animating a second translucent
+            # Toplevel causes Windows desktop composition to redraw the whole
+            # app and makes input feel laggy.
+            dialog.lift(overlay)
+            dialog._modal_overlay = overlay
+
+            def clear_overlay(_event=None) -> None:
+                if getattr(dialog, "_modal_overlay", None) is overlay:
+                    try:
+                        self.motion.cancel("modal-overlay")
+                        overlay.destroy()
+                    except tk.TclError:
+                        pass
+                    self._modal_overlay = None
+
+            dialog.bind("<Destroy>", clear_overlay, add="+")
+        animate_window_open(dialog, duration_ms=150)
         dialog.protocol("WM_DELETE_WINDOW", lambda: animate_window_close(dialog))
         if hasattr(self, "app_icon"):
             try:
@@ -406,6 +483,7 @@ class AccountManager(tk.Tk):
             ("语言模型管理", self.manage_model_settings),
             ("全局人设/发言规则", self.manage_global_rules),
             ("语音 API 管理", self.manage_voice_settings),
+            ("双向机器人托管", self.manage_bot_hosting),
             ("私信/自提及设置", self.manage_trigger_settings),
             ("检查更新", self.check_project_updates),
             ("在线更新" if FROZEN and not SOURCE_MODE else "同步更新", self.sync_project_updates),
@@ -435,6 +513,11 @@ class AccountManager(tk.Tk):
         self.status_label.pack(side="left", fill="x", expand=True)
         footer.bind("<Configure>", lambda event: self.status_label.configure(wraplength=max(300, event.width - 28)))
         self.status.trace_add("write", self._animate_status)
+        self.update_detail = tk.StringVar(value="")
+        self.update_progress = ttk.Progressbar(frame, orient="horizontal", mode="determinate", maximum=100, style="Update.Horizontal.TProgressbar")
+        self.update_detail_label = ttk.Label(frame, textvariable=self.update_detail, style="Subtitle.TLabel")
+        style = ttk.Style(self)
+        style.configure("Update.Horizontal.TProgressbar", troughcolor="#F3EFF8", background=self.colors["accent"], bordercolor="#E6D8F0", lightcolor="#B992D2", darkcolor="#956DC1", thickness=8)
 
     def _animate_status(self, *_args: str) -> None:
         self.motion.animate(
@@ -733,6 +816,7 @@ class AccountManager(tk.Tk):
         dialog.title("人设、发言规则与 Telegram API")
         dialog.geometry("820x700")
         dialog.minsize(700, 600)
+        dialog.configure(background=self.colors["background"])
         dialog.transient(self)
         dialog.grab_set()
         body = ttk.Frame(dialog, padding=14)
@@ -744,16 +828,16 @@ class AccountManager(tk.Tk):
             section = ttk.Frame(parent)
             section.pack(fill="both", expand=True, pady=(0, 9))
             ttk.Label(section, text=title).pack(anchor="w", pady=(2, 4))
-            text = tk.Text(section, height=height, wrap="word", relief="solid", borderwidth=1, undo=True)
+            text = tk.Text(section, height=height, wrap="word", relief="solid", borderwidth=1, undo=True, background="#FFFFFF", foreground=self.colors["text"], insertbackground=self.colors["accent"], highlightthickness=1, highlightbackground=self.colors["border"], padx=8, pady=6, font=("Microsoft YaHei UI", 10))
             scrollbar = ttk.Scrollbar(section, orient="vertical", command=text.yview)
             text.configure(yscrollcommand=scrollbar.set)
             text.pack(side="left", fill="both", expand=True)
             scrollbar.pack(side="right", fill="y")
             return text
 
-        global_tab = ttk.Frame(notebook, padding=12)
-        account_tab = ttk.Frame(notebook, padding=12)
-        telegram_tab = ttk.Frame(notebook, padding=18)
+        global_tab = ttk.Frame(notebook, padding=16, style="App.TFrame")
+        account_tab = ttk.Frame(notebook, padding=16, style="App.TFrame")
+        telegram_tab = ttk.Frame(notebook, padding=18, style="App.TFrame")
         notebook.add(global_tab, text="全局统一设定")
         notebook.add(account_tab, text="账号独立设定")
         notebook.add(telegram_tab, text="Telegram API")
@@ -772,9 +856,12 @@ class AccountManager(tk.Tk):
         global_prompt = editor(global_tab, "全局人设 / 固有提示词（main.py 内置内容已载入）", height=12)
         global_prompt.insert("1.0", str(global_prompt_value))
         rules_source = values.get("GLOBAL_SPEAKING_RULES") or values.get("ACCOUNT_SPEAKING_RULES")
+        parsed_rules = parse_global_speaking_rules(rules_source)
+        if not parsed_rules and not values.get("GLOBAL_MODEL_INSTRUCTIONS"):
+            parsed_rules = default_global_speaking_rules()
         global_rule_items = [
             {"id": rule_id, "text": text}
-            for rule_id, text in parse_global_speaking_rules(rules_source)
+            for rule_id, text in parsed_rules
         ]
         rules_section = ttk.Frame(global_tab)
         rules_section.pack(fill="x", pady=(4, 0))
@@ -782,7 +869,7 @@ class AccountManager(tk.Tk):
             rules_section,
             text="全局统一发言规则（所有账号生效；可在账号页逐条设置例外）",
         ).pack(anchor="w", pady=(2, 4))
-        global_rules_list = tk.Listbox(rules_section, height=5, exportselection=False)
+        global_rules_list = tk.Listbox(rules_section, height=5, exportselection=False, bg="#FFFFFF", fg=self.colors["text"], selectbackground="#E8DDF2", selectforeground="#67468B", relief="flat", highlightthickness=1, highlightbackground=self.colors["border"], font=("Microsoft YaHei UI", 9))
         global_rules_scroll = ttk.Scrollbar(rules_section, orient="vertical", command=global_rules_list.yview)
         global_rules_list.configure(yscrollcommand=global_rules_scroll.set)
         global_rules_list.pack(side="left", fill="x", expand=True)
@@ -884,6 +971,8 @@ class AccountManager(tk.Tk):
             "MODEL_PERSONA_PROMPT": editor(account_tab, "该账号人设补充", height=5),
             "ACCOUNT_SPEAKING_RULES": editor(account_tab, "该账号发言规则", height=5),
         }
+        effective_preview = tk.StringVar()
+        ttk.Label(account_tab, textvariable=effective_preview, wraplength=730, foreground=self.colors["muted"]).pack(anchor="w", pady=(0, 8))
         exception_section = ttk.LabelFrame(
             account_tab,
             text="全局发言规则例外（仅跳过所选规则；其他全局规则继续生效）",
@@ -921,6 +1010,11 @@ class AccountManager(tk.Tk):
             for index, item in enumerate(global_rule_items):
                 if item["id"] in exception_ids:
                     account_exception_list.selection_set(index)
+            active = [item["text"] for item in global_rule_items if item["id"] not in exception_ids]
+            account_rule = account_fields["ACCOUNT_SPEAKING_RULES"].get("1.0", "end-1c").strip()
+            effective_preview.set(
+                f"当前账号最终生效规则预览：全局 {len(active)} 条 + 账号补充 {'已设置' if account_rule else '未设置'}（冲突时全局优先）"
+            )
 
         profile_combo.bind("<<ComboboxSelected>>", load_account_settings)
         load_account_settings()
@@ -1024,6 +1118,161 @@ class AccountManager(tk.Tk):
 
         AnimatedButton(buttons, text="保存设置", style="Primary.TButton", command=save).pack(side="right")
         AnimatedButton(buttons, text="取消", command=lambda: animate_window_close(dialog)).pack(side="right", padx=(0, 8))
+
+    def manage_bot_hosting(self) -> None:
+        path = ROOT / "data" / "bot-hosting.json"
+        stored = load_bot_config(path)
+        bots = stored.get("bots") if isinstance(stored.get("bots"), dict) else ({"default": stored} if stored else {})
+        bot_name = tk.StringVar(value=next(iter(bots), "bot-1"))
+        config = dict(bots.get(bot_name.get(), {}))
+        dialog = self._new_dialog()
+        dialog.title("双向机器人托管")
+        dialog.geometry("590x560")
+        dialog.minsize(540, 500)
+        body = ttk.Frame(dialog, padding=18)
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text="双向机器人托管", style="CardTitle.TLabel").pack(anchor="w")
+        ttk.Label(body, text="BotFather Token 接入 · 管理员通过回复转发消息进行传话", wraplength=520).pack(anchor="w", pady=(4, 12))
+        selector = ttk.LabelFrame(body, text="机器人配置", padding=8); selector.pack(fill="x", pady=(0, 8))
+        names = ttk.Combobox(selector, textvariable=bot_name, values=sorted(bots), state="readonly", width=24)
+        names.pack(side="left", fill="x", expand=True)
+
+        def refresh_names(select=None):
+            values = sorted(bots)
+            names.configure(values=values)
+            chosen = select if select in bots else (values[0] if values else "")
+            bot_name.set(chosen)
+            if chosen:
+                config.clear(); config.update(bots.get(chosen, {}))
+                for key, variable in fields.items(): variable.set(str(config.get(key, 8765 if key == "verify_port" else "")))
+                enabled.set(bool(config.get("turnstile_enabled", False)))
+
+        def add_bot():
+            name = simpledialog.askstring("新增机器人配置", "配置名称（英文、数字、下划线或连字符）：", parent=dialog)
+            if not name: return
+            name = name.strip()
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,32}", name):
+                messagebox.showerror("名称无效", "名称只能包含英文、数字、下划线或连字符。", parent=dialog); return
+            if name in bots:
+                messagebox.showinfo("配置已存在", "请使用其他名称。", parent=dialog); return
+            bots[name] = {}
+            save_bot_config(path, {"bots": bots})
+            refresh_names(name)
+
+        def rename_bot():
+            old = bot_name.get();
+            if not old: return
+            name = simpledialog.askstring("重命名机器人配置", "新配置名称：", initialvalue=old, parent=dialog)
+            if not name or name == old: return
+            name = name.strip()
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,32}", name) or name in bots:
+                messagebox.showerror("名称无效", "名称格式错误或已存在。", parent=dialog); return
+            bots[name] = bots.pop(old); save_bot_config(path, {"bots": bots}); refresh_names(name)
+
+        def remove_bot():
+            name = bot_name.get()
+            if not name or not messagebox.askyesno("移除机器人配置", f"移除“{name}”的本地配置？运行中的窗口不会被强制关闭。", parent=dialog): return
+            bots.pop(name, None); save_bot_config(path, {"bots": bots}); refresh_names()
+
+        AnimatedButton(selector, text="新增", command=add_bot).pack(side="left", padx=(8, 0))
+        AnimatedButton(selector, text="重命名", command=rename_bot).pack(side="left", padx=(5, 0))
+        AnimatedButton(selector, text="移除", style="Danger.TButton", command=remove_bot).pack(side="left", padx=(5, 0))
+
+        def select_bot(_event=None):
+            config.clear(); config.update(bots.get(bot_name.get().strip(), {}))
+            for key, variable in fields.items(): variable.set(str(config.get(key, 8765 if key == "verify_port" else "")))
+            enabled.set(bool(config.get("turnstile_enabled", False)))
+        names.bind("<<ComboboxSelected>>", select_bot)
+
+        fields = {}
+        for key, label, secret in (
+            ("bot_token", "BotFather Bot API Token", True),
+            ("operator_chat_id", "管理员 Telegram Chat ID", False),
+            ("verify_url", "公开 HTTPS 验证页地址", False),
+            ("verify_api_url", "远程验证 API 地址", False),
+            ("verify_api_key", "远程验证 API 密钥", True),
+            ("turnstile_site_key", "Cloudflare Turnstile Site Key", False),
+            ("turnstile_secret", "Cloudflare Turnstile Secret Key", True),
+            ("verify_port", "本机验证服务端口", False),
+        ):
+            row = ttk.Frame(body)
+            row.pack(fill="x", pady=4)
+            ttk.Label(row, text=label, width=28).pack(side="left", anchor="n")
+            variable = tk.StringVar(value=str(config.get(key, 8765 if key == "verify_port" else "")))
+            entry = ttk.Entry(row, textvariable=variable, show="●" if secret else "")
+            entry.pack(side="left", fill="x", expand=True)
+            fields[key] = variable
+
+        enabled = tk.BooleanVar(value=bool(config.get("turnstile_enabled", False)))
+        refresh_names(bot_name.get())
+        ttk.Checkbutton(body, text="启用 Cloudflare Turnstile 人机验证", variable=enabled).pack(anchor="w", pady=(8, 4))
+        ttk.Label(body, text="验证服务仅监听 127.0.0.1。需将公开 HTTPS 地址通过 Cloudflare Tunnel 或反向代理转发到本机端口；Turnstile 域名需与公开站点匹配。管理员在 Telegram 中回复转发来的消息即可回传。", wraplength=520).pack(anchor="w", pady=(4, 10))
+        state = tk.StringVar(value="托管日志将在独立窗口显示")
+        ttk.Label(body, textvariable=state, wraplength=520).pack(anchor="w", pady=(0, 10))
+
+        def collect():
+            value = {key: variable.get().strip() for key, variable in fields.items()}
+            if value["operator_chat_id"]:
+                try:
+                    value["operator_chat_id"] = int(value["operator_chat_id"])
+                except ValueError as exc:
+                    raise ValueError("管理员 Chat ID 必须是整数") from exc
+            try:
+                value["verify_port"] = int(value["verify_port"] or 8765)
+                if not 1024 <= value["verify_port"] <= 65535:
+                    raise ValueError
+            except ValueError as exc:
+                raise ValueError("验证服务端口需为 1024–65535") from exc
+            value["turnstile_enabled"] = enabled.get()
+            value["verify_bind"] = "127.0.0.1"
+            return value
+
+        actions = ttk.Frame(body)
+        actions.pack(fill="x", side="bottom")
+
+        def save():
+            try:
+                config.update(collect())
+                name = bot_name.get().strip() or "bot-1"
+                bots[name] = dict(config)
+                save_bot_config(path, {"bots": bots})
+                names.configure(values=sorted(bots))
+                self.status.set("机器人托管配置已安全保存在本机 data/bot-hosting.json")
+                state.set("配置已保存")
+            except (OSError, ValueError) as exc:
+                messagebox.showerror("无法保存", str(exc), parent=dialog)
+
+        def start():
+            try:
+                config.update(collect())
+                name = bot_name.get().strip() or "bot-1"
+                bots[name] = dict(config)
+                save_bot_config(path, {"bots": bots})
+                worker_path = ROOT / "data" / f"bot-hosting-{re.sub(r'[^A-Za-z0-9_-]', '_', name)}.json"
+                save_bot_config(worker_path, config)
+                if self.bot_host and self.bot_host.running:
+                    self.bot_host.stop()
+                if FROZEN:
+                    command = [sys.executable, "--bot-worker-gui", "--bot-config", str(worker_path)]
+                else:
+                    command = [self.python, str(ROOT / "desktop_entry.py"), "--bot-worker-gui", "--bot-config", str(worker_path)]
+                flags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+                process = subprocess.Popen(command, cwd=ROOT, env=os.environ.copy(), creationflags=flags)
+                self.child_processes.append(("bot-hosting", "双向机器人托管", process))
+                state.set("已打开独立托管日志窗口")
+            except Exception as exc:
+                messagebox.showerror(
+                    "启动托管失败",
+                    f"{exc}\n\n请确认 Bot Token 正确且当前电脑能访问 api.telegram.org。若启用了验证，本地端口只适用于 Tunnel 模式。",
+                    parent=dialog,
+                )
+
+        def stop():
+            state.set("请在独立日志窗口中关闭托管")
+
+        AnimatedButton(actions, text="保存配置", command=save).pack(side="left")
+        AnimatedButton(actions, text="停止托管", command=stop).pack(side="right", padx=(6, 0))
+        AnimatedButton(actions, text="启动托管", style="Primary.TButton", command=start).pack(side="right")
 
     def manage_trigger_settings(self) -> None:
         """Configure private-message and self-mention replies for the selected account."""
@@ -1173,21 +1422,29 @@ class AccountManager(tk.Tk):
 
     def _prompt_release_update(self, release: dict) -> None:
         tag = str(release.get("tag_name", "未知版本"))
-        dialog = tk.Toplevel(self)
+        dialog = self._new_dialog()
         dialog.title("发现新版本")
         dialog.transient(self)
-        dialog.resizable(False, False)
-        dialog.geometry("380x165")
-        body = ttk.Frame(dialog, padding=12)
+        dialog.resizable(True, True)
+        dialog.minsize(460, 300)
+        dialog.geometry("560x390")
+        dialog.configure(background=self.colors["background"])
+        body = ttk.Frame(dialog, padding=16)
         body.pack(fill="both", expand=True)
-        ttk.Label(body, text=f"Telegram AI 有新版本：{release.get('name') or tag}", justify="left").pack(anchor="w")
+        ttk.Label(body, text=f"Telegram AI 有新版本：{release.get('name') or tag}", style="CardTitle.TLabel", justify="left").pack(anchor="w")
+        ttk.Label(body, text=f"当前版本：{VERSION}    新版本：{tag}", style="CardHint.TLabel").pack(anchor="w", pady=(4, 10))
+        notes_frame = ttk.Frame(body, style="CardInner.TFrame")
+        notes_frame.pack(fill="both", expand=True)
+        notes_text = tk.Text(notes_frame, wrap="word", height=10, state="disabled", relief="flat", borderwidth=0, background="#FFFFFF", foreground=self.colors["text"], padx=10, pady=8, highlightthickness=1, highlightbackground=self.colors["border"], font=("Microsoft YaHei UI", 9))
+        notes_scroll = ttk.Scrollbar(notes_frame, orient="vertical", style="Vertical.TScrollbar", command=notes_text.yview)
+        notes_text.configure(yscrollcommand=notes_scroll.set)
+        notes_text.pack(side="left", fill="both", expand=True)
+        notes_scroll.pack(side="right", fill="y")
+        notes_text.configure(state="normal")
+        notes_text.insert("1.0", str(release.get("body") or "暂无更新说明").strip())
+        notes_text.configure(state="disabled")
         buttons = ttk.Frame(body)
         buttons.pack(side="bottom", fill="x", pady=(8, 0))
-        notes = str(release.get("body") or "")[:90].strip()
-        if notes:
-            ttk.Label(body, text=notes, justify="left", wraplength=340).pack(anchor="w", pady=(8, 0))
-        else:
-            ttk.Label(body, text=f"当前版本：{VERSION}").pack(anchor="w", pady=(8, 0))
 
         def later() -> None:
             try:
@@ -1217,33 +1474,88 @@ class AccountManager(tk.Tk):
         for button in self.update_buttons:
             button.state(["disabled"])
         self.status.set("正在下载并校验更新…")
-        results: queue.Queue[Path | Exception] = queue.Queue()
+        self.update_progress.configure(value=0)
+        self.update_progress.pack(fill="x", padx=2, pady=(6, 0))
+        self.update_detail.set("准备下载…")
+        self.update_detail_label.pack(anchor="e", pady=(2, 0))
+        results: queue.Queue[tuple[str, object] | Path | Exception] = queue.Queue()
+
+        def report_progress(received: int, total: int, speed: float) -> None:
+            results.put(("progress", (received, total, speed)))
 
         def worker() -> None:
             try:
-                results.put(download_update(release, Path(sys.executable).resolve()))
+                results.put(download_update(release, Path(sys.executable).resolve(), progress=report_progress))
+                results.put(("phase", "校验完成，正在准备安装…"))
             except Exception as exc:
                 results.put(exc)
 
         threading.Thread(target=worker, daemon=True).start()
 
         def poll_download() -> None:
+            latest_progress = None
+            latest_phase = None
+            terminal_result = None
             try:
-                result = results.get_nowait()
+                while True:
+                    item = results.get_nowait()
+                    if isinstance(item, tuple):
+                        kind, payload = item
+                        if kind == "progress":
+                            latest_progress = payload
+                        elif kind == "phase":
+                            latest_phase = payload
+                    else:
+                        terminal_result = item
+                        break
             except queue.Empty:
+                pass
+            if latest_progress is not None:
+                received, total, speed = latest_progress
+                if total:
+                    if self.update_progress.cget("mode") != "determinate":
+                        self.update_progress.stop()
+                        self.update_progress.configure(mode="determinate")
+                    percent = received * 100 / total
+                    self.update_progress.configure(value=percent)
+                    percent_text = f"{percent:.0f}%"
+                else:
+                    if self.update_progress.cget("mode") != "indeterminate":
+                        self.update_progress.configure(mode="indeterminate")
+                        self.update_progress.start(12)
+                    percent_text = "下载中"
+                speed_text = f"{speed / 1024 / 1024:.2f} MB/s" if speed >= 1024 * 1024 else f"{speed / 1024:.0f} KB/s"
+                total_text = f" / {total / 1024 / 1024:.1f} MB" if total else ""
+                self.update_detail.set(f"已下载 {received / 1024 / 1024:.1f} MB{total_text} · {speed_text} · {percent_text}")
+            if latest_phase:
+                self.update_detail.set(str(latest_phase))
+            if terminal_result is None:
                 self.after(120, poll_download)
                 return
+            result = terminal_result
             self.release_busy = False
             for button in self.update_buttons:
                 button.state(["!disabled"])
             if isinstance(result, Exception):
+                self.update_progress.pack_forget()
+                self.update_progress.stop()
+                self.update_progress.configure(mode="determinate", value=0)
+                self.update_detail_label.pack_forget()
+                self.update_detail.set("")
                 text = str(result) if isinstance(result, ReleaseUpdateError) else "下载更新失败，请稍后重试。"
                 self.status.set(text)
                 messagebox.showerror("更新失败", text, parent=self)
                 return
             try:
+                self.update_progress.configure(value=100)
+                self.update_detail.set("下载完成，正在重启应用…")
                 launch_replacement(Path(sys.executable).resolve(), result)
             except ReleaseUpdateError as exc:
+                self.update_progress.pack_forget()
+                self.update_progress.stop()
+                self.update_progress.configure(mode="determinate", value=0)
+                self.update_detail_label.pack_forget()
+                self.update_detail.set("")
                 self.status.set(str(exc))
                 messagebox.showerror("无法安装更新", str(exc), parent=self)
                 return
@@ -1815,8 +2127,9 @@ class AccountManager(tk.Tk):
 
         dialog = self._new_dialog()
         dialog.title(f"{self.get_display_name(profile)} - 用户权限白名单")
-        dialog.geometry("760x450")
+        dialog.geometry("780x500")
         dialog.minsize(700, 400)
+        dialog.configure(background=self.colors["background"])
         dialog.columnconfigure(0, weight=1)
         dialog.rowconfigure(1, weight=1)
         dialog.transient(self)
@@ -1839,7 +2152,7 @@ class AccountManager(tk.Tk):
             panel.pack(side="left", fill="both", expand=True, padx=(0, 6) if title.startswith("可") else (6, 0))
             list_frame = ttk.Frame(panel)
             list_frame.pack(fill="both", expand=True)
-            listing = tk.Listbox(list_frame, height=8, selectmode=tk.EXTENDED, exportselection=False)
+            listing = tk.Listbox(list_frame, height=8, selectmode=tk.EXTENDED, exportselection=False, bg="#FFFFFF", fg=self.colors["text"], selectbackground="#E8DDF2", selectforeground="#67468B", relief="flat", highlightthickness=1, highlightbackground=self.colors["border"], font=("Microsoft YaHei UI", 10))
             listing.pack(side="left", fill="both", expand=True)
             scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=listing.yview)
             scrollbar.pack(side="right", fill="y")
@@ -1853,7 +2166,7 @@ class AccountManager(tk.Tk):
         ttk.Label(owner_panel, text="数字 ID（优先、稳定）").pack(anchor="w")
         owner_id_frame = ttk.Frame(owner_panel)
         owner_id_frame.pack(fill="both", expand=True)
-        owner_list = tk.Listbox(owner_id_frame, height=3, selectmode=tk.EXTENDED, exportselection=False)
+        owner_list = tk.Listbox(owner_id_frame, height=3, selectmode=tk.EXTENDED, exportselection=False, bg="#FFFFFF", fg=self.colors["text"], selectbackground="#E8DDF2", selectforeground="#67468B", relief="flat", highlightthickness=1, highlightbackground=self.colors["border"], font=("Microsoft YaHei UI", 10))
         owner_list.pack(side="left", fill="both", expand=True)
         owner_id_scroll = ttk.Scrollbar(owner_id_frame, orient="vertical", command=owner_list.yview)
         owner_id_scroll.pack(side="right", fill="y")

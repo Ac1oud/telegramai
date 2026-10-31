@@ -130,6 +130,12 @@ def parse_global_speaking_rules(raw: str | None) -> tuple[tuple[str, str], ...]:
     return (("legacy", source),)
 
 
+def default_global_speaking_rules() -> tuple[tuple[str, str], ...]:
+    """Expose the built-in prompt as editable rules for the desktop editor."""
+    chunks = [part.strip() for part in re.split(r"(?<=[。！？；])", DEFAULT_MODEL_INSTRUCTIONS) if part.strip()]
+    return tuple((f"main-{index:03d}", text) for index, text in enumerate(chunks, 1))
+
+
 def parse_global_rule_exceptions(raw: str | None) -> frozenset[str]:
     try:
         values = json.loads(str(raw or "[]"))
@@ -827,6 +833,10 @@ def compose_reply_instructions(config: Config, *, complex_analysis: bool = False
         )
     else:
         instructions = config.global_model_instructions or DEFAULT_MODEL_INSTRUCTIONS
+        # Once the built-in prompt has been projected into editable global
+        # rules, avoid sending the original immutable copy a second time.
+        if config.global_speaking_rules and config.global_model_instructions == DEFAULT_MODEL_INSTRUCTIONS:
+            instructions = ""
 
     active_global_rules = [
         text for rule_id, text in config.global_speaking_rules
@@ -1831,6 +1841,8 @@ async def run(
                                                 config, image_prompt, reply_images
                                             )
                                             image_result = await generate_image(config, image_prompt, reply_images)
+                                            # 生图完成提示与“已发送到群组”提示分开；此时图片尚未投递。
+                                            play_sound("image_success")
                                             if _used_edit_endpoint:
                                                 image_caption += f"\n参考图：{len(reply_images)} 张已提交图片编辑接口"
                                             if _sources:
@@ -1886,7 +1898,8 @@ async def run(
                     # 统一控制回复延迟和跨群最短发送间隔。
                     await asyncio.sleep(max(config.reply_delay_seconds, wait_for_global))
                     try:
-                        play_sound("send")
+                        if not image_result:
+                            play_sound("send")
                         if image_result:
                             await delete_progress_message(client, event.chat_id, progress_message)
                             progress_message = None
@@ -1894,6 +1907,7 @@ async def run(
                             image_file = io.BytesIO(image_bytes)
                             image_file.name = f"generated.{image_extension}"
                             sent_in_source = False
+                            image_delivered = False
                             if image_delivery_mode == "document":
                                 try:
                                     await client.send_file(
@@ -1958,6 +1972,7 @@ async def run(
                                 )
                                 if backup_result is not None:
                                     backup_chat_id, backup_title, backup_message = backup_result
+                                    image_delivered = True
                                     await asyncio.sleep(1.0)
                                     try:
                                         await client.send_message(
@@ -1990,6 +2005,11 @@ async def run(
                                         )
                                     except (ChatSendMediaForbiddenError, ChatSendPhotosForbiddenError):
                                         LOG.warning("当前群也禁止发送文字，无法显示图片转交失败提示")
+                            if sent_in_source:
+                                image_delivered = True
+                            if image_delivered:
+                                # 仅在图片实际送达源群或转交群后播放发送完成提示。
+                                play_sound("send")
                         elif voice_bytes:
                             voice_file = io.BytesIO(voice_bytes)
                             voice_file.name = "reply.ogg"

@@ -73,6 +73,27 @@ class ReleaseUpdaterTests(unittest.TestCase):
                     updater.download_update(release, executable)
             self.assertFalse(executable.exists())
 
+    def test_download_reports_byte_count_total_and_speed(self):
+        payload = b"streamed executable payload"
+        digest = hashlib.sha256(payload).hexdigest()
+        release = {"assets": [
+            {"name": "TelegramAI.exe", "browser_download_url": "https://github.com/Ac1oud/telegramai/releases/download/v1/TelegramAI.exe", "digest": f"sha256:{digest}"},
+            {"name": "SHA256SUMS.txt", "browser_download_url": "https://github.com/Ac1oud/telegramai/releases/download/v1/SHA256SUMS.txt"},
+        ]}
+        progress_events = []
+
+        def request(url, *, binary=False, progress=None):
+            if "SHA256SUMS" in url:
+                return b""
+            self.assertTrue(binary)
+            self.assertIsNotNone(progress)
+            progress(len(payload), len(payload), 4096)
+            return payload
+
+        with tempfile.TemporaryDirectory() as temp, patch.object(updater, "_request", side_effect=request):
+            updater.download_update(release, Path(temp) / "TelegramAI.exe", progress=lambda *values: progress_events.append(values))
+        self.assertEqual(progress_events, [(len(payload), len(payload), 4096)])
+
     def test_snooze_is_scoped_to_a_release_tag_and_expires(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "update-state.json"

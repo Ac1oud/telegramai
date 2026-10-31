@@ -47,7 +47,7 @@ def _openers():
     return [urllib.request.build_opener(handler, urllib.request.HTTPSHandler(context=context)) for handler in handlers]
 
 
-def _request(url: str, *, binary: bool = False) -> bytes:
+def _request(url: str, *, binary: bool = False, progress=None) -> bytes:
     if not url.startswith("https://api.github.com/") and not url.startswith("https://github.com/"):
         raise ReleaseUpdateError("更新地址不是受信任的 GitHub 地址。")
     request = urllib.request.Request(url, headers={
@@ -61,7 +61,26 @@ def _request(url: str, *, binary: bool = False) -> bytes:
                 final_host = response.geturl().split("/", 3)[2].lower()
                 if final_host not in {"api.github.com", "github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"}:
                     raise ReleaseUpdateError("GitHub 更新下载跳转到了不受信任的地址。")
-                return response.read()
+                if not binary or progress is None:
+                    return response.read()
+                total = int(response.headers.get("Content-Length") or 0)
+                received = 0
+                chunks = []
+                last_report_at = time.monotonic()
+                last_report_received = 0
+                while True:
+                    chunk = response.read(256 * 1024)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    received += len(chunk)
+                    now = time.monotonic()
+                    elapsed = max(now - last_report_at, 0.001)
+                    speed = (received - last_report_received) / elapsed
+                    progress(received, total, speed)
+                    last_report_at = now
+                    last_report_received = received
+                return b"".join(chunks)
         except urllib.error.HTTPError as exc:
             if exc.code in {401, 403, 404}:
                 raise ReleaseUpdateError(
@@ -131,7 +150,7 @@ def _read_state() -> dict:
         return {}
 
 
-def download_update(release: dict, executable: Path) -> Path:
+def download_update(release: dict, executable: Path, progress=None) -> Path:
     """Download the matching portable EXE and verify its published SHA-256."""
     name = executable.name
     assets = {asset.get("name"): asset for asset in release.get("assets", []) if isinstance(asset, dict)}
@@ -149,7 +168,7 @@ def download_update(release: dict, executable: Path) -> Path:
         expected = match.group(1).lower() if match else None
     if not expected or not re.fullmatch(r"[0-9a-f]{64}", expected):
         raise ReleaseUpdateError("Release 没有提供有效的 EXE SHA-256 校验值。")
-    blob = _request(asset["browser_download_url"], binary=True)
+    blob = _request(asset["browser_download_url"], binary=True, progress=progress)
     if hashlib.sha256(blob).hexdigest() != expected:
         raise ReleaseUpdateError("下载文件校验失败，文件未应用。请稍后重试。")
     staging = executable.with_name(executable.name + ".update")

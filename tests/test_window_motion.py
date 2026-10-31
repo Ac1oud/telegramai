@@ -56,6 +56,52 @@ class WindowMotionTests(unittest.TestCase):
         self.assertFalse(errors)
         self.assertEqual(observed, [(360, 240, (320, 200), 1.0)])
 
+    def test_dialog_is_hidden_before_window_motion_maps_it(self):
+        root = tk.Tk()
+        root.geometry("360x240")
+        root.update_idletasks()
+        dialog = tk.Toplevel(root)
+        dialog.withdraw()
+        self.assertFalse(dialog.winfo_ismapped())
+        animate_window_open(dialog, duration_ms=30)
+        root.after(140, root.destroy)
+        root.mainloop()
+
+    def test_modal_overlay_close_uses_native_fade_callback(self):
+        root = tk.Tk()
+        root.geometry("360x240")
+        overlay = tk.Toplevel(root)
+        overlay.geometry("360x240")
+        dialog = tk.Toplevel(root)
+        dialog.geometry("240x120")
+        root.update_idletasks()
+        observed = []
+        dialog._modal_overlay = overlay
+        overlay._modal_overlay_fade = lambda progress: observed.append(progress)
+        animate_window_close(dialog, duration_ms=30)
+        root.after(140, root.destroy)
+        root.mainloop()
+        self.assertGreater(len(observed), 1)
+        self.assertAlmostEqual(observed[-1], 0.0)
+
+    def test_static_modal_overlay_close_does_not_animate_window_alpha(self):
+        root = tk.Tk()
+        root.geometry("360x240")
+        overlay = tk.Toplevel(root)
+        overlay.geometry("360x240")
+        dialog = tk.Toplevel(root)
+        dialog.geometry("240x120")
+        root.update_idletasks()
+        calls = []
+        overlay._modal_overlay_static = True
+        original_attributes = overlay.attributes
+        overlay.attributes = lambda *args: calls.append(args) or original_attributes(*args)
+        dialog._modal_overlay = overlay
+        animate_window_close(dialog, duration_ms=30)
+        root.after(140, root.destroy)
+        root.mainloop()
+        self.assertEqual(calls, [])
+
 
 if __name__ == "__main__":
     unittest.main()

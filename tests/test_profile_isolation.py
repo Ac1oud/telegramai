@@ -21,6 +21,25 @@ class ProfileIsolationTests(unittest.TestCase):
             with patch.object(main, "ROOT", root), patch.object(main, "PROFILE_DIR", root / "profiles"):
                 self.assertEqual(main.Config.load().global_model_instructions, main.DEFAULT_MODEL_INSTRUCTIONS)
 
+    def test_builtin_prompt_can_be_projected_into_editable_global_rules(self):
+        rules = main.default_global_speaking_rules()
+        self.assertGreater(len(rules), 5)
+        self.assertTrue(all(rule_id.startswith("main-") and text for rule_id, text in rules))
+
+    def test_projected_builtin_rules_replace_immutable_prompt_copy(self):
+        config = type("Config", (), {
+            "model_system_prompt": "",
+            "model_persona_prompt": "",
+            "global_model_instructions": main.DEFAULT_MODEL_INSTRUCTIONS,
+            "global_speaking_rules": (("main-001", "只用简短句子。"),),
+            "global_rule_exceptions": frozenset(),
+            "account_speaking_rules": "账号补充规则",
+        })()
+        instructions = main.compose_reply_instructions(config)
+        self.assertNotIn("【角色表达风格】", instructions)
+        self.assertIn("只用简短句子。", instructions)
+        self.assertIn("账号补充规则", instructions)
+
     def test_dotenv_writer_roundtrips_multiline_prompts_without_orphan_lines(self):
         from account_manager import _write_profile_settings
 

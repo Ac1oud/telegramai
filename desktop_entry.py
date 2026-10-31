@@ -16,7 +16,7 @@ class ProjectModules(importlib.abc.MetaPathFinder):
         self.root = root
 
     def find_spec(self, fullname, path=None, target=None):
-        if fullname in {"main", "account_manager", "ui_effects", "project_updater", "release_updater", "app_runtime", "version", "gui_worker", "image_references"}:
+        if fullname in {"main", "account_manager", "ui_effects", "project_updater", "release_updater", "app_runtime", "version", "gui_worker", "bot_gui_worker", "bot_hosting", "image_references"}:
             source = self.root / f"{fullname}.py"
             if source.is_file():
                 return importlib.util.spec_from_file_location(fullname, source)
@@ -58,6 +58,34 @@ def run() -> None:
         from gui_worker import run_worker
 
         run_worker()
+        return
+    if len(sys.argv) > 1 and sys.argv[1] == "--bot-worker-gui":
+        sys.argv.pop(1)
+        from bot_gui_worker import run_bot_worker
+        run_bot_worker()
+        return
+    if len(sys.argv) > 1 and sys.argv[1] == "--bot-worker-console":
+        sys.argv.pop(1)
+        import json
+        import threading
+        from bot_hosting import BotHostingService
+        config_path = Path(sys.argv[sys.argv.index("--bot-config") + 1])
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        def report(text):
+            print(f"[BOT] {text}", flush=True)
+        service = BotHostingService(config, on_status=report)
+        try:
+            print("Telegram AI · 双向机器人托管终端", flush=True)
+            print("关闭此终端将停止托管。", flush=True)
+            service.start()
+            while True:
+                threading.Event().wait(1)
+        except KeyboardInterrupt:
+            report("收到停止信号")
+        except Exception as exc:
+            report(f"启动失败：{exc}")
+        finally:
+            service.stop()
         return
     if sys.argv[1:] == ["--version"]:
         print(VERSION)
